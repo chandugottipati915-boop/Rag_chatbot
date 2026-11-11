@@ -1,4 +1,6 @@
+from collections.abc import Iterator
 from dataclasses import dataclass
+from functools import lru_cache
 from pathlib import Path
 
 from openai import OpenAI
@@ -7,7 +9,13 @@ from rag.config import settings
 from rag.retrieval import RetrievedChunk, retrieve
 
 PROMPT = (Path(__file__).parent / "prompts" / "answers.txt").read_text()
-client = OpenAI(api_key=settings.openai_api_key)
+NO_ANSWER = "I don't know based on the provided papers."
+
+
+@lru_cache
+def get_client() -> OpenAI:
+    # created on first use, so importing this module doesn't need an API key (tests rely on this)
+    return OpenAI(api_key=settings.openai_api_key)
 
 
 @dataclass
@@ -29,16 +37,41 @@ def build_context(chunks: list[RetrievedChunk]) -> str:
     )
 
 
-def answer(question: str, top_k: int = settings.top_k) -> Answer:
-    chunks = retrieve(question, top_k=top_k)
-    if not chunks:
-        return Answer(question, "I don't know based on the provided papers.", [])
+def _messages(question: str, chunks: list[RetrievedChunk]) -> list[dict]:
+    return [{"role": "user", "content": PROMPT.format(
+        context=build_context(chunks), question=question,
+    )}]
 
-    resp = client.chat.completions.create(
+
+def generate(question: str, chunks: list[RetrievedChunk]) -> str:
+    """LLM answer over chunks you already retrieved."""
+    if not chunks:
+        return NO_ANSWER
+    resp = get_client().chat.completions.create(
         model=settings.llm_model,
         temperature=settings.llm_temperature,
-        messages=[{"role": "user", "content": PROMPT.format(
-            context=build_context(chunks), question=question,
-        )}],
+        messages=_messages(question, chunks),
     )
-    return Answer(question, resp.choices[0].message.content.strip(), chunks)
+    return resp.choices[0].message.content.strip()
+
+
+def generate_stream(question: str, chunks: list[RetrievedChunk]) -> Iterator[str]:
+    """Like generate(), but yields pieces of text as the LLM writes them."""
+    if not chunks:
+        yield NO_ANSWER
+        return
+    stream = get_client().chat.completions.create(
+        model=settings.llm_model,
+        temperature=settings.llm_temperature,
+        messages=_messages(question, chunks),
+        stream=True,
+    )
+    for event in stream:
+        if event.choices and (piece := event.choices[0].delta.content):
+            yield piece
+
+
+def answer(question: str, top_k: int = settings.top_k) -> Answer:
+    """Retrieve + generate in one call (used by scripts/ask.py)."""
+    chunks = retrieve(question, top_k=top_k)
+    return Answer(question, generate(question, chunks), chunks)

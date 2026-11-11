@@ -8,7 +8,7 @@ from qdrant_client.models import (
 
 from rag.config import settings
 
-client = QdrantClient(url=settings.qdrant_url)
+client = QdrantClient(url=settings.qdrant_url, timeout=5)  # fail fast when Qdrant is down
 COLL = settings.collection_name
 
 

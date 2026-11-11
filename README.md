@@ -3,7 +3,7 @@
 Ask questions about 15 landmark papers (Transformers, BERT, DPR, ColBERT, RAG, Self-RAG,
 CRAG, GraphRAG, RAGAS, …) and get answers with citations to the paper, section and page.
 
-**Status:** Phase 1 — retrieval + generation pipeline with an evaluated baseline.
+**Status:** Phase 2 — evaluated RAG pipeline served by a streaming FastAPI backend.
 
 ## How it works
 
@@ -45,6 +45,29 @@ uv run python scripts/ask.py "How does Self-RAG decide when to retrieve?"       
 uv run python scripts/inspect_chunks.py 2005.11401.pdf                          # check chunking for one paper
 ```
 
+## API
+
+```bash
+uv run uvicorn rag.api.main:app --app-dir src --reload     # interactive docs: http://localhost:8000/docs
+```
+
+| Method | Path | What it does |
+|---|---|---|
+| GET | `/health` | Qdrant reachable + number of indexed chunks (`ok` / `degraded`) |
+| POST | `/search` | Retrieved chunks only, no LLM call |
+| POST | `/chat` | Full cited answer as JSON |
+| POST | `/chat/stream` | Streamed answer via Server-Sent Events: `sources` → `token`… → `done` |
+| POST / GET | `/ingest` | Start background ingestion / check its status |
+
+Errors: `422` invalid input · `502` LLM provider failed · `503` vector store unavailable · `409` ingestion already running.
+
+```bash
+curl -N -X POST localhost:8000/chat/stream -H "Content-Type: application/json" \
+     -d '{"question": "How does Self-RAG decide when to retrieve?"}'
+```
+
+Tests (retrieval, LLM and ingestion faked; no services needed): `uv run pytest -q`
+
 ## Evaluation
 
 Golden set: `goldens/retrieval_golden.jsonl` — 33 questions (26 single-paper, 4 multi-paper,
@@ -77,18 +100,22 @@ src/rag/
   retrieval.py         question → ranked chunks with citations
   generation.py        prompt + LLM → cited answer
   prompts/answers.txt  answer prompt
+  api/
+    main.py            FastAPI routes
+    schemas.py         request / response models
   ingestion/
     chunker.py         PDF → section-aware chunks + metadata
     pipeline.py        PDFs → chunks → vectors → Qdrant
 scripts/               download, ingest checks, retrieval and ask scripts
 eval/                  evaluation script + baseline notes
+tests/                 API tests
 goldens/               golden question set
 ```
 
 ## Roadmap
 
 - [x] **Phase 1** — ingestion, retrieval, cited generation, evaluated baseline
-- [ ] **Phase 2** — FastAPI backend with streaming answers
+- [x] **Phase 2** — FastAPI backend with streaming answers
 - [ ] **Phase 3** — LangGraph orchestration, hybrid search (dense + BM25), reranking, query rewriting
 - [ ] **Phase 4** — Next.js chat UI, chat history (Postgres), auth, tracing (Langfuse)
 - [ ] **Phase 5** — Docker Compose, CI with eval gates, guardrails, cloud deployment
