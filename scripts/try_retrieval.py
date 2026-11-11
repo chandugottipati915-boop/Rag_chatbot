@@ -1,3 +1,6 @@
+import sys, pathlib  # make "src/" importable even if the editable install is skipped (macOS hidden .pth)
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "src"))
+
 import sys
 from rag.retrieval import retrieve
 

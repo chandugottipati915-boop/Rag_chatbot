@@ -1,3 +1,6 @@
+import sys, pathlib  # make "src/" importable even if the editable install is skipped (macOS hidden .pth)
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "src"))
+
 import json
 import time
 from pathlib import Path
@@ -10,7 +13,8 @@ IDS = [
     "2005.11401", "2210.03629", "2212.10496", "2307.03172", "2309.15217",
     "2310.11511", "2312.10997", "2401.15884", "2404.16130", "2005.14165",
 ]
-OUT = Path("data/raw"); OUT.mkdir(parents=True, exist_ok=True)
+from rag.config import settings
+OUT = settings.raw_dir; OUT.mkdir(parents=True, exist_ok=True)
 
 client = arxiv.Client(delay_seconds=3)
 catalog = {}

@@ -1,6 +1,8 @@
+import sys, pathlib  # make "src/" importable even if the editable install is skipped (macOS hidden .pth)
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "src"))
+
 import json
 from pathlib import Path
-from langchain_openai import ChatOpenAI
 from dotenv import load_dotenv
 load_dotenv()
 
@@ -8,12 +10,13 @@ from deepeval import evaluate
 from deepeval.metrics import ContextualPrecisionMetric, ContextualRecallMetric
 from deepeval.test_case import LLMTestCase
 
+from rag.config import PROJECT_ROOT
 from rag.retrieval import retrieve
 
 THRESHOLD = 0.7
 JUDGE_MODEL = "gpt-4o-mini"        # DeepEval takes a model name string
 TOP_K = 5
-GOLDEN = Path("eval/retrieval_golden.jsonl")
+GOLDEN = PROJECT_ROOT / "goldens" / "retrieval_golden.jsonl"
 
 golden = [json.loads(line) for line in GOLDEN.read_text().splitlines() if line.strip()]
 answerable = [g for g in golden if g["type"] != "unanswerable"]

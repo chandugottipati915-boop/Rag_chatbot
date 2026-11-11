@@ -8,3 +8,17 @@ wheels/
 
 # Virtual environments
 .venv
+
+# Secrets: never commit
+.env
+
+# Data (re-create with scripts/download_papers.py)
+data/
+
+# Tool caches / IDE / OS
+.deepeval/
+.idea/
+.DS_Store
+.pytest_cache/
+.ruff_cache/
+eval/results/
