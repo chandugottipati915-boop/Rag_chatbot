@@ -20,6 +20,13 @@ STAMP_RE = re.compile(r"^arXiv:\d{4}\.\d{4,5}")
 SPACED_RE = re.compile(r"^(\S )+\S$")
 # A heading number that pdfminer split from its title: "1" + "Introduction", "3.3" + "Jeopardy ..."
 HEADING_NUM_RE = re.compile(r"^([1-9]|1\d)(\.\d{1,2})*\.?$")
+# Roman-numeral section headings (the RAG survey): "II. OVERVIEW OF RAG"
+ROMAN_SECTION_RE = re.compile(r"^([IVX]{1,4})\.\s+[A-Z].{1,80}$")
+# A Roman heading number split from its title by pdfminer: "II." + "OVERVIEW OF RAG"
+ROMAN_NUM_RE = re.compile(r"^[IVX]{1,4}\.$")
+# Lettered subsection inside a Roman section: "A. Naive RAG"
+LETTER_SUB_RE = re.compile(r"^[A-H]\.\s+[A-Z].{1,80}$")
+ROMAN_VALUES = {"I": 1, "V": 5, "X": 10}
 # Glyphs pdfminer couldn't map to Unicode: "(cid:80)"
 CID_RE = re.compile(r"\(cid:\d+\)")
 
@@ -41,10 +48,22 @@ def is_stamp(text: str, page: int | None) -> bool:
     return page == 1 and bool(SPACED_RE.match(text))
 
 
+def roman_to_int(numeral: str) -> int:
+    total = 0
+    for i, ch in enumerate(numeral):
+        value = ROMAN_VALUES[ch]
+        nxt = ROMAN_VALUES[numeral[i + 1]] if i + 1 < len(numeral) else 0
+        total += -value if value < nxt else value
+    return total
+
+
 def section_major(heading: str) -> int | None:
-    """'4.3 Jeopardy ...' -> 4; 'Abstract' -> None."""
+    """'4.3 Jeopardy ...' -> 4; 'II. OVERVIEW OF RAG / A. Naive RAG' -> 2; 'Abstract' -> None."""
     m = re.match(r"(\d+)", heading)
-    return int(m.group(1)) if m else None
+    if m:
+        return int(m.group(1))
+    m = ROMAN_SECTION_RE.match(heading.split(" / ")[0])
+    return roman_to_int(m.group(1)) if m else None
 
 
 def load_catalog(raw_dir: Path) -> dict:
@@ -64,6 +83,9 @@ def split_by_section(elements):
         if HEADING_NUM_RE.match(text):
             pending_num = text.rstrip(".")
             continue
+        if ROMAN_NUM_RE.match(text):
+            pending_num = text                 # keep the dot: "II." + "OVERVIEW" -> "II. OVERVIEW"
+            continue
         if pending_num is not None:
             # re-attach "3.3" to "Jeopardy Question Generation"; if the next element isn't a
             # heading, SECTION_RE won't match and the number simply stays in the text
@@ -79,12 +101,15 @@ def split_by_section(elements):
                 in_refs, current = False, text
             else:
                 continue                                  # skip citation entries
-        elif is_heading and SECTION_RE.match(text):
+        elif is_heading and (SECTION_RE.match(text) or ROMAN_SECTION_RE.match(text)):
             # Section numbers only stay put or step forward by one; anything else
             # ("10 RAG-Tok" from a chart axis) is figure/table debris, not a heading.
             new, cur = section_major(text), section_major(current)
             if new is None or (cur is None and new <= 1) or (cur is not None and new in (cur, cur + 1)):
                 current = text
+        elif is_heading and LETTER_SUB_RE.match(text) and ROMAN_SECTION_RE.match(current.split(" / ")[0]):
+            # "A. Naive RAG" inside "II. OVERVIEW OF RAG" -> "II. OVERVIEW OF RAG / A. Naive RAG"
+            current = f"{current.split(' / ')[0]} / {text}"
 
         sections.setdefault(current, []).append(el)
     return sections

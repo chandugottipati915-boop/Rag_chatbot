@@ -9,11 +9,11 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from deepeval import evaluate
-from deepeval.metrics import AnswerRelevancyMetric, FaithfulnessMetric
-from deepeval.test_case import LLMTestCase
+from deepeval.metrics import AnswerRelevancyMetric, FaithfulnessMetric, GEval
+from deepeval.test_case import LLMTestCase, SingleTurnParams
 
 from rag.config import PROJECT_ROOT
-from rag.generation import generate
+from rag.generation import NO_ANSWER, generate
 from rag.retrieval import retrieve
 
 THRESHOLD = 0.7
@@ -23,6 +23,21 @@ GOLDEN = PROJECT_ROOT / "goldens" / "generator_golden.jsonl"
 OUT_DIR = PROJECT_ROOT / "eval" / "results"
 
 golden = [json.loads(line) for line in GOLDEN.read_text().splitlines() if line.strip()]
+
+# What the judge should expect, per `expected_behavior` in the golden set
+BEHAVIOR_SPEC = {
+    "answer": "ANSWER. The papers contain the answer. The response should answer the question. "
+              "Refusing ('I don't know') is wrong.",
+    "correct_premise": "CORRECT THE PREMISE. The question contains a false assumption. The response must "
+                       "say the assumption is wrong and give the correct information. Refusing, or "
+                       "accepting the false assumption, is wrong.",
+    "abstain": "DECLINE. The papers do not contain the answer. The response must decline (for example "
+               "'I don't know based on the provided papers') and must not answer from general knowledge "
+               "or invent facts.",
+    "clarify_or_cover": "CLARIFY OR COVER. The question is ambiguous. The response should ask which meaning "
+                        "is intended, or explicitly cover the possible meanings. Silently picking one "
+                        "meaning is wrong.",
+}
 
 # ---- 1. run the real pipeline: retrieve → generate
 test_cases, records = [], []
@@ -35,7 +50,9 @@ for i, item in enumerate(golden, 1):
         LLMTestCase(
             input=item["question"],
             actual_output=answer,                               # what the generator actually said
-            expected_output=item["reference_answer"],           # not used by these metrics; shown in reports
+            # read by the behavior metric (GEval); Faithfulness and Answer Relevancy ignore it
+            expected_output=(f"Expected behavior: {BEHAVIOR_SPEC[item['expected_behavior']]}\n"
+                             f"Reference answer: {item['reference_answer']}"),
             retrieval_context=[c.text for c in chunks],         # what Faithfulness checks claims against
             additional_metadata={
                 "id": item["id"],
@@ -58,17 +75,38 @@ answers_file.write_text("\n".join(json.dumps(r) for r in records) + "\n")
 print(f"\nSaved answers → {answers_file}")
 
 # ---- 2. judge them
+behavior_metric = GEval(
+    name="Correct Behavior",
+    evaluation_params=[SingleTurnParams.INPUT, SingleTurnParams.ACTUAL_OUTPUT,
+                       SingleTurnParams.EXPECTED_OUTPUT],
+    evaluation_steps=[
+        "Read the 'Expected behavior' line in the expected output: ANSWER, CORRECT THE PREMISE, "
+        "DECLINE, or CLARIFY OR COVER.",
+        "Decide which of these behaviors the actual output shows.",
+        "If the actual output shows a different behavior than expected, give a very low score.",
+        "If the behavior matches and is ANSWER or CORRECT THE PREMISE, check the content against the "
+        "reference answer: lower the score for contradictions, wrong facts or missing key points.",
+        "If the behavior matches and is DECLINE or CLARIFY OR COVER, do not penalize the response "
+        "for being short or for not containing facts.",
+    ],
+    model=JUDGE_MODEL,
+    threshold=THRESHOLD,
+)
+
 metrics = [
     FaithfulnessMetric(threshold=THRESHOLD, model=JUDGE_MODEL, include_reason=True),
     AnswerRelevancyMetric(threshold=THRESHOLD, model=JUDGE_MODEL, include_reason=True),
+    behavior_metric,
 ]
 result = evaluate(test_cases=test_cases, metrics=metrics)
 
 # ---- 3. summary, grouped by expected behavior
+# match results back by question (evaluate() runs cases concurrently, so don't rely on order)
+behavior_of = {item["question"]: item["expected_behavior"] for item in golden}
 scores = defaultdict(lambda: defaultdict(list))   # behavior → metric → [scores]
-for tc, tr in zip(test_cases, result.test_results):
-    behavior = tc.additional_metadata["expected_behavior"]
-    for md in tr.metrics_data:
+for tr in result.test_results:
+    behavior = behavior_of[tr.input]
+    for md in tr.metrics_data or []:
         scores[behavior][md.name].append(md.score or 0.0)
 
 print("\n=== Generator eval (judge: %s, k=%d) ===" % (JUDGE_MODEL, TOP_K))
@@ -79,3 +117,11 @@ for behavior in ("answer", "correct_premise", "abstain", "clarify_or_cover"):
     for name, vals in scores[behavior].items():
         passed = sum(v >= THRESHOLD for v in vals)
         print(f"  {name:<20} mean={sum(vals)/len(vals):.3f}  passed={passed}/{len(vals)}")
+
+# deterministic check, no judge needed: answerable questions that got the refusal sentence
+false_refusals = [r["id"] for r in records
+                  if r["expected_behavior"] == "answer" and r["answer"].strip() == NO_ANSWER]
+missed_abstains = [r["id"] for r in records
+                   if r["expected_behavior"] == "abstain" and r["answer"].strip() != NO_ANSWER]
+print(f"\nFalse refusals on answerable questions: {len(false_refusals)}  {false_refusals}")
+print(f"Unanswerable questions NOT refused:     {len(missed_abstains)}  {missed_abstains}")

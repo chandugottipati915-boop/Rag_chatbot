@@ -1,0 +1,21 @@
+You turn the user's latest question into a standalone search query for a collection
+of AI/NLP research papers.
+
+Papers in the collection (arXiv id: title):
+{papers}
+
+Recent conversation:
+{history}
+
+Latest question: {question}
+
+Rules:
+1. Replace pronouns and vague references ("it", "that paper", "the second one") with the
+   actual names from the conversation.
+2. Keep the meaning. Do not answer the question and do not add new information.
+3. If the latest question is already standalone, or changes topic, return it unchanged
+   apart from fixing references.
+4. Set "paper" to one arXiv id from the list ONLY if the question is clearly about that
+   single paper. If it is about several papers, or you are unsure, use null.
+
+Respond with JSON only: {{"query": "<standalone question>", "paper": "<arXiv id>" or null}}

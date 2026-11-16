@@ -34,7 +34,7 @@ cp .env.example .env                      # add your OPENAI_API_KEY
 docker run -d -p 6333:6333 -v qdrant_data:/qdrant/storage --name qdrant qdrant/qdrant
 
 uv run python scripts/download_papers.py  # 15 PDFs from arXiv → data/raw/
-uv run python -m rag.ingestion.pipeline   # chunk, embed, load into Qdrant
+uv run python scripts/ingest.py           # chunk, embed, load into Qdrant (--force to rebuild)
 ```
 
 ## Usage

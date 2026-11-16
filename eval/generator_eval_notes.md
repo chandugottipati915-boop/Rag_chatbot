@@ -68,3 +68,29 @@ Below-1.0 but passing: g08, g10, g21, g25 (Faith. 0.83), g13 (0.83 / 0.83), g28,
   - Check retrieved chunks for g09/g12/g22/g27/g33 to separate retrieval misses from over-refusal.
   - Update the generation prompt to correct false premises instead of refusing.
   - Score `abstain` / `correct_premise` cases with a custom GEval metric (e.g. "did it correctly abstain / correct the premise?") instead of relevancy/faithfulness, or report them separately.
+
+## Run: 2026-11-12 11:24 — after prompt fix (Phase 3, Part A)
+
+Changes: rules moved to a system prompt (`prompts/system.txt`) with four ordered cases
+(answer / correct a false premise / answer partially / refuse as last resort) and a worked
+false-premise example; survey sections fixed in the chunker (Roman numerals); re-ingested.
+New metric: **Correct Behavior** (GEval, judged against `expected_behavior` + reference answer).
+
+| Expected behavior | n | Faithfulness | Answer Relevancy | Correct Behavior |
+|---|---|---|---|---|
+| answer | 33 | 0.933 (31/33) | 0.951 (30/33) | 0.687 (19/33) |
+| correct_premise | 4 | 0.750 (3/4) | 0.330 (1/4) | 0.305 (1/4) |
+| abstain | 4 | 1.000 (4/4) | 0.125 (0/4) | 0.967 (4/4) |
+| clarify_or_cover | 2 | 1.000 (2/2) | 1.000 (2/2) | 0.174 (0/2) |
+| **all** | 43 | **0.925** | **0.819** | **0.654** |
+
+vs. baseline (answer group): false refusals 5 → **0**, Faithfulness 0.899 → **0.933**,
+Answer Relevancy 0.843 → **0.951**.
+
+Remaining issues:
+- False premises: g37 (BERT encoder) and g35 corrected; g34 (GPT-2 → BART) and g36 (no RL) still refuse.
+- g12 (Self-RAG base models): now answers honestly that the sources don't say → retrieval miss (Part B).
+- Ambiguous g42/g43: answered one reading instead of clarifying (0/2 on Correct Behavior).
+- Correct Behavior on the answer group (0.69) is lower than Faithfulness: it also compares content with
+  the reference answers, so it penalizes incomplete answers. Spot-check before trusting it.
+- g39 is flagged by the exact-string check but correctly says the dollar cost isn't given.

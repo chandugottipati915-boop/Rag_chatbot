@@ -8,7 +8,9 @@ from openai import OpenAI
 from rag.config import settings
 from rag.retrieval import RetrievedChunk, retrieve
 
-PROMPT = (Path(__file__).parent / "prompts" / "answers.txt").read_text()
+PROMPTS = Path(__file__).parent / "prompts"
+SYSTEM_PROMPT = (PROMPTS / "system.txt").read_text()   # rules: how to answer
+USER_PROMPT = (PROMPTS / "answers.txt").read_text()    # template: sources + question
 NO_ANSWER = "I don't know based on the provided papers."
 
 
@@ -38,9 +40,13 @@ def build_context(chunks: list[RetrievedChunk]) -> str:
 
 
 def _messages(question: str, chunks: list[RetrievedChunk]) -> list[dict]:
-    return [{"role": "user", "content": PROMPT.format(
-        context=build_context(chunks), question=question,
-    )}]
+    # rules go in the system message so they aren't drowned out by the sources
+    return [
+        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "user", "content": USER_PROMPT.format(
+            context=build_context(chunks), question=question,
+        )},
+    ]
 
 
 def generate(question: str, chunks: list[RetrievedChunk]) -> str:

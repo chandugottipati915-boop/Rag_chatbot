@@ -12,6 +12,7 @@ dependencies = [
     "httpx>=0.28.1",
     "langchain-ollama>=1.1.0",
     "langchain-openai>=1.7.4",
+    "langgraph>=1.2.21",
     "openai>=3.49.0",
     "pydantic-settings>=2.16.2",
     "pymupdf>=2.1",

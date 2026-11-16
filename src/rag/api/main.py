@@ -18,6 +18,7 @@ from fastapi.responses import RedirectResponse, StreamingResponse
 from openai import OpenAIError
 
 from rag import vectorstore as vs
+from rag.config import settings
 from rag.api.schemas import (
     ChatRequest, ChatResponse, HealthResponse, IngestRequest,
     IngestStatus, SearchResponse, Source,
@@ -34,8 +35,11 @@ async def lifespan(app: FastAPI):
     # load the embedding model once at startup instead of on the first request
     try:
         get_embedder()
+        if settings.rerank:
+            from rag.rerank import get_reranker
+            get_reranker()      # load the cross-encoder at startup too
     except Exception:
-        log.exception("Could not load the embedding model at startup")
+        log.exception("Could not load the embedding/reranker model at startup")
     yield
 
 

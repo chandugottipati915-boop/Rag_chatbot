@@ -26,6 +26,11 @@ class Settings(BaseSettings):
 
     # retrieval
     top_k: int = 5
+    retrieval_mode: Literal["dense", "hybrid"] = "dense"   # hybrid = dense + BM25, fused with RRF
+    prefetch_k: int = 20                                   # candidates per retriever before fusion
+    rerank: bool = False                                   # re-order candidates with a cross-encoder
+    rerank_candidates: int = 20                            # how many candidates the reranker sees
+    reranker_model: str = "BAAI/bge-reranker-base"
 
     # llm
     llm_model: str = "gpt-4o-mini"
@@ -33,8 +38,10 @@ class Settings(BaseSettings):
 
     @property
     def collection_name(self) -> str:
-        # separate collection per provider: vector sizes differ
-        return f"papers_{self.embedding_provider}"
+        # separate collection per provider (vector sizes differ) and per mode
+        # (hybrid points carry an extra sparse vector), so you can compare them side by side
+        base = f"papers_{self.embedding_provider}"
+        return f"{base}_hybrid" if self.retrieval_mode == "hybrid" else base
 
 
 settings = Settings()
