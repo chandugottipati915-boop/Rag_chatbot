@@ -4,26 +4,35 @@ import json
 import logging
 from functools import lru_cache
 from pathlib import Path
+from typing import Literal
 
 from openai import OpenAIError
 from pydantic import BaseModel, ValidationError
 
 from rag.config import settings
+from rag.generation import NO_ANSWER, get_client
 from rag.generation import generate as llm_generate
-from rag.generation import get_client
 from rag.graph.state import RAGState
 from rag.retrieval import retrieve as do_retrieve
 
 log = logging.getLogger("rag.graph")
 
-REWRITE_PROMPT = (Path(__file__).resolve().parents[1] / "prompts" / "rewrite.txt").read_text()
+PROMPTS = Path(__file__).resolve().parents[1] / "prompts"
+REWRITE_PROMPT = (PROMPTS / "rewrite.txt").read_text()
+GRADE_PROMPT = (PROMPTS / "grade.txt").read_text()
+
 MAX_HISTORY_MESSAGES = 4       # only the last few turns matter for resolving "it"
 MAX_MESSAGE_CHARS = 600        # long answers in history are trimmed to keep the prompt small
+MAX_PASSAGE_CHARS = 1200       # enough to judge relevance, keeps the grading call cheap
 
 
 class Rewrite(BaseModel):
     query: str
     paper: str | None = None
+
+
+class Grade(BaseModel):
+    relevant: list[int]
 
 
 @lru_cache
@@ -97,3 +106,45 @@ def generate(state: RAGState) -> dict:
         # the generator doesn't see the history, so tell it what "it" referred to
         question = f"{question}\n(Interpreted as: {query})"
     return {"answer": llm_generate(question, state.get("chunks", []))}
+
+
+def grade(state: RAGState) -> dict:
+    """Keep only the chunks the LLM judges relevant; one call grades all chunks at once."""
+    chunks = state.get("chunks", [])
+    if not chunks:
+        return {"retrieved": [], "chunks": []}
+
+    passages = "\n\n".join(
+        f"[{i}] ({c.title}, {c.section})\n{c.text[:MAX_PASSAGE_CHARS]}"
+        for i, c in enumerate(chunks, 1)
+    )
+    # grade against the standalone query: "How is it trained?" can't be judged on its own
+    prompt = GRADE_PROMPT.format(question=state.get("query", state["question"]), passages=passages)
+    try:
+        resp = get_client().chat.completions.create(
+            model=settings.llm_model,
+            temperature=0,
+            response_format={"type": "json_object"},
+            messages=[{"role": "user", "content": prompt}],
+        )
+        out = Grade.model_validate_json(resp.choices[0].message.content)
+    except (OpenAIError, ValidationError, ValueError, TypeError):
+        # grading is a filter: if it fails, keep everything (today's behavior), never lose context
+        log.warning("Grading failed; keeping all %d chunks", len(chunks), exc_info=True)
+        return {"retrieved": chunks, "chunks": chunks}
+
+    keep = {n for n in out.relevant if 1 <= n <= len(chunks)}   # passages are numbered from 1
+    kept = [c for i, c in enumerate(chunks, 1) if i in keep]     # original (reranked) order
+    log.info("grade: kept %d/%d chunks %s", len(kept), len(chunks), sorted(keep))
+    return {"retrieved": chunks, "chunks": kept}
+
+
+def abstain(state: RAGState) -> dict:
+    """Nothing relevant was found: refuse without calling the generator."""
+    return {"answer": NO_ANSWER}
+
+
+def route_after_grade(state: RAGState) -> Literal["generate", "abstain"]:
+    """Conditional edge (not a node): returns the name of the next node."""
+    return "generate" if state.get("chunks") else "abstain"
+

@@ -1,0 +1,18 @@
+You check which retrieved passages help answer a question about AI/NLP research papers.
+
+Question: {question}
+
+Passages:
+{passages}
+
+A passage is RELEVANT if it contains information that helps answer the question,
+even partly. Count it as relevant when:
+- it answers any part of the question (for comparisons, either side counts)
+- it contradicts or corrects an assumption in the question
+
+A passage is NOT relevant if it only mentions the same names or topic without the
+needed information. For example: another paper's experiments that merely use the
+method in the question, or a related-work summary that names it.
+
+Respond with JSON only: {{"relevant": [<numbers of the relevant passages>]}}
+Use an empty list if none are relevant.

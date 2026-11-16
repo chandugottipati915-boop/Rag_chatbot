@@ -15,3 +15,4 @@ class RAGState(TypedDict, total=False):
     paper_filter: str | None     # arXiv id to restrict retrieval to, or None
     chunks: list[RetrievedChunk] # from retrieval (graded chunks from C2 on)
     answer: str
+    retrieved: list[RetrievedChunk]   # before grading (chunks = after grading)

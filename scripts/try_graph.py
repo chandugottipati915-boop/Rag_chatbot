@@ -22,8 +22,9 @@ if "--diagram" in sys.argv:
 def show(result: dict) -> None:
     print(f"\nQ:      {result['question']}")
     print(f"query:  {result['query']}   (paper filter: {result.get('paper_filter')})")
+    print(f"graded: kept {len(result.get('chunks', []))}/{len(result.get('retrieved', []))} chunks")
     print(f"answer: {result['answer']}")
-    for i, c in enumerate(result["chunks"], 1):
+    for i, c in enumerate(result.get("chunks", []), 1):
         print(f"  [{i}] {c.citation}")
 
 
@@ -39,3 +40,12 @@ show(graph.invoke({
         {"role": "assistant", "content": first["answer"]},
     ],
 }))
+
+# 3) C2 checks: grading drops wrong-paper chunks, refuses off-topic, keeps premise-correcting chunks
+for q in [
+    "Which base models does Self-RAG fine-tune?",                    # g12: CRAG chunks should be dropped
+    "How many minutes are in an hour?",                              # off-topic: 0 kept → abstain
+    "Why did the original RAG paper use GPT-2 as its generator?",    # false premise: BART chunk kept
+]:
+    show(graph.invoke({"question": q}))
+
