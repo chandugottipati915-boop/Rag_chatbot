@@ -22,7 +22,8 @@ if "--diagram" in sys.argv:
 def show(result: dict) -> None:
     print(f"\nQ:      {result['question']}")
     print(f"query:  {result['query']}   (paper filter: {result.get('paper_filter')})")
-    print(f"graded: kept {len(result.get('chunks', []))}/{len(result.get('retrieved', []))} chunks")
+    print(f"graded: kept {len(result.get('chunks', []))}/{len(result.get('retrieved', []))} chunks"
+          f"   (retries: {result.get('retries', 0)})")
     print(f"answer: {result['answer']}")
     for i, c in enumerate(result.get("chunks", []), 1):
         print(f"  [{i}] {c.citation}")

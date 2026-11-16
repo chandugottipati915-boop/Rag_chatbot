@@ -16,3 +16,4 @@ class RAGState(TypedDict, total=False):
     chunks: list[RetrievedChunk] # from retrieval (graded chunks from C2 on)
     answer: str
     retrieved: list[RetrievedChunk]   # before grading (chunks = after grading)
+    retries: int                      # reformulate-and-search attempts so far (C3)

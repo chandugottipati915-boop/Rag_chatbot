@@ -1,0 +1,17 @@
+A search over a collection of AI/NLP research papers found nothing relevant.
+Write ONE different search query that is more likely to find the answer.
+
+Papers in the collection (arXiv id: title):
+{papers}
+
+User's question: {question}
+Search query that failed: {failed_query}
+
+Rules:
+1. Keep the meaning of the user's question. Do not answer it.
+2. Use different wording: the technical terms, method names or paper names the papers
+   themselves would likely use, plus useful synonyms.
+3. Do not repeat the failed query.
+4. If the question is clearly unrelated to these papers, return it unchanged.
+
+Respond with JSON only: {{"query": "<new search query>"}}

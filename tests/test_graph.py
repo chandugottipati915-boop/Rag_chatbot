@@ -85,18 +85,58 @@ def test_wrong_paper_chunk_is_dropped(fake):
     assert all(c.arxiv_id == "2310.11511" for c in out["chunks"])
 
 
-def test_nothing_relevant_abstains_without_generation(fake):
-    fake.use_llm({"relevant": []})
+def test_nothing_relevant_retries_once_then_abstains(fake):
+    llm = fake.use_llm({"relevant": []},                              # grade #1
+                       {"query": "minutes per hour time conversion"},  # reformulate
+                       {"relevant": []})                               # grade #2
     out = run("How many minutes are in an hour?")
     assert out["answer"] == NO_ANSWER
+    assert out["retries"] == 1
+    assert len(fake.retrieve_calls) == 2                   # exactly one extra search
     assert fake.generated_with is None                     # no generation call
+    assert llm.replies == []                               # no extra LLM calls beyond the three
 
 
-def test_empty_retrieval_abstains_without_grading(fake):
+def test_retry_finds_relevant_chunks_and_generates(fake):
+    fake.use_llm({"relevant": []},                                     # grade #1: nothing
+                 {"query": "Self-RAG critic and generator training"},  # reformulate
+                 {"relevant": [1]})                                    # grade #2: found it
+    out = run("How do they teach the model?")
+    assert fake.retrieve_calls[1] == ("Self-RAG critic and generator training", None)
+    assert out["retries"] == 1
+    assert fake.generated_with is not None and len(fake.generated_with[1]) == 1
+
+
+def test_retry_drops_the_paper_filter(fake):
+    fake.use_llm({"query": "How is Self-RAG trained?", "paper": "2310.11511"},   # rewrite
+                 {"relevant": []},                                              # grade #1
+                 {"query": "Self-RAG training procedure"},                      # reformulate
+                 {"relevant": [2]})                                             # grade #2
+    run("How is it trained?", HISTORY)
+    assert fake.retrieve_calls[0][1] == "2310.11511"
+    assert fake.retrieve_calls[1] == ("Self-RAG training procedure", None)
+
+
+def test_reformulation_failure_retries_with_original_question(fake):
+    fake.use_llm({"relevant": []}, OpenAIError("down"), {"relevant": []})
+    out = run("Some question")
+    assert fake.retrieve_calls[1] == ("Some question", None)
+    assert out["answer"] == NO_ANSWER
+
+
+def test_empty_retrieval_skips_grading_but_still_retries(fake):
     fake.chunks = []
-    llm = fake.use_llm()                                   # any LLM call would fail: no replies queued
+    llm = fake.use_llm({"query": "a different query"})    # only the reformulate call
     out = run("Anything")
-    assert out["answer"] == NO_ANSWER and llm.prompts == []
+    assert out["answer"] == NO_ANSWER
+    assert len(llm.prompts) == 1 and "found nothing relevant" in llm.prompts[0]
+
+
+def test_max_retries_zero_abstains_immediately(fake, monkeypatch):
+    monkeypatch.setattr(nodes.settings, "max_retries", 0)
+    fake.use_llm({"relevant": []})
+    out = run("How many minutes are in an hour?")
+    assert out["answer"] == NO_ANSWER and len(fake.retrieve_calls) == 1
 
 
 @pytest.mark.parametrize("bad", [OpenAIError("down"), "not json", {"wrong_key": [1]}])
@@ -145,5 +185,6 @@ def test_invented_paper_id_is_ignored(fake):
 
 def test_graph_shape():
     mermaid = get_graph().get_graph().draw_mermaid()
-    for edge in ("retrieve --> grade", "grade -.-> generate", "grade -.-> abstain"):
+    for edge in ("retrieve --> grade", "grade -.-> generate", "grade -.-> abstain",
+                 "grade -.-> reformulate", "reformulate --> retrieve"):
         assert edge in mermaid, edge

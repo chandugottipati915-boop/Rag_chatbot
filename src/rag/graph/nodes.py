@@ -20,6 +20,7 @@ log = logging.getLogger("rag.graph")
 PROMPTS = Path(__file__).resolve().parents[1] / "prompts"
 REWRITE_PROMPT = (PROMPTS / "rewrite.txt").read_text()
 GRADE_PROMPT = (PROMPTS / "grade.txt").read_text()
+REFORMULATE_PROMPT = (PROMPTS / "reformulate.txt").read_text()
 
 MAX_HISTORY_MESSAGES = 4       # only the last few turns matter for resolving "it"
 MAX_MESSAGE_CHARS = 600        # long answers in history are trimmed to keep the prompt small
@@ -33,6 +34,10 @@ class Rewrite(BaseModel):
 
 class Grade(BaseModel):
     relevant: list[int]
+
+
+class Reformulation(BaseModel):
+    query: str
 
 
 @lru_cache
@@ -144,7 +149,41 @@ def abstain(state: RAGState) -> dict:
     return {"answer": NO_ANSWER}
 
 
-def route_after_grade(state: RAGState) -> Literal["generate", "abstain"]:
+def reformulate(state: RAGState) -> dict:
+    """Nothing relevant was found: write a different search query and try once more.
+
+    Search-oriented rewriting (Rewrite-Retrieve-Read), used as a recovery step. The paper
+    filter is dropped too, in case it was what hid the answer.
+    """
+    question = state["question"]
+    failed = state.get("query", question)
+    retries = state.get("retries", 0) + 1
+    prompt = REFORMULATE_PROMPT.format(
+        papers="\n".join(f"- {pid}: {title}" for pid, title in paper_catalog().items()) or "(unknown)",
+        question=question,
+        failed_query=failed,
+    )
+    try:
+        resp = get_client().chat.completions.create(
+            model=settings.llm_model,
+            temperature=0,
+            response_format={"type": "json_object"},
+            messages=[{"role": "user", "content": prompt}],
+        )
+        query = Reformulation.model_validate_json(resp.choices[0].message.content).query.strip()
+    except (OpenAIError, ValidationError, ValueError, TypeError):
+        log.warning("Reformulation failed; retrying with the original question", exc_info=True)
+        query = question
+    query = query or question
+    log.info("reformulate (retry %d): %r -> %r", retries, failed, query)
+    return {"query": query, "paper_filter": None, "retries": retries}
+
+
+def route_after_grade(state: RAGState) -> Literal["generate", "reformulate", "abstain"]:
     """Conditional edge (not a node): returns the name of the next node."""
-    return "generate" if state.get("chunks") else "abstain"
+    if state.get("chunks"):
+        return "generate"
+    if state.get("retries", 0) < settings.max_retries:
+        return "reformulate"                      # one more search with a different query
+    return "abstain"
 

@@ -36,6 +36,9 @@ class Settings(BaseSettings):
     llm_model: str = "gpt-4o-mini"
     llm_temperature: float = 0.1
 
+    # graph
+    max_retries: int = 1                                   # reformulate-and-search attempts before abstaining
+
     @property
     def collection_name(self) -> str:
         # separate collection per provider (vector sizes differ) and per mode
