@@ -21,15 +21,30 @@ PROMPTS = Path(__file__).resolve().parents[1] / "prompts"
 REWRITE_PROMPT = (PROMPTS / "rewrite.txt").read_text()
 GRADE_PROMPT = (PROMPTS / "grade.txt").read_text()
 REFORMULATE_PROMPT = (PROMPTS / "reformulate.txt").read_text()
+ROUTE_RULES = (PROMPTS / "route_rules.txt").read_text().strip()
+ROUTE_PROMPT = (PROMPTS / "route.txt").read_text()
+SMALL_TALK_PROMPT = (PROMPTS / "small_talk.txt").read_text()
+
+SMALL_TALK_FALLBACK = ("Hi! I answer questions about 15 research papers on retrieval-augmented "
+                       "generation, with a citation for every claim. Try asking how Self-RAG "
+                       "decides when to retrieve.")
 
 MAX_HISTORY_MESSAGES = 4       # only the last few turns matter for resolving "it"
 MAX_MESSAGE_CHARS = 600        # long answers in history are trimmed to keep the prompt small
 MAX_PASSAGE_CHARS = 1200       # enough to judge relevance, keeps the grading call cheap
 
 
+Route = Literal["papers", "chat", "off_topic"]
+
+
 class Rewrite(BaseModel):
     query: str
     paper: str | None = None
+    route: Route = "papers"
+
+
+class RouteDecision(BaseModel):
+    route: Route
 
 
 class Grade(BaseModel):
@@ -60,19 +75,45 @@ def _format_history(history: list[dict]) -> str:
 
 # ------------------------------------------------------------------ nodes
 
+def _papers_list() -> str:
+    return "\n".join(f"- {pid}: {title}" for pid, title in paper_catalog().items()) or "(unknown)"
+
+
+def classify(question: str) -> Route:
+    """Route a first message (no history): papers, chat or off_topic. One small LLM call."""
+    prompt = ROUTE_PROMPT.format(papers=_papers_list(), route_rules=ROUTE_RULES, question=question)
+    try:
+        resp = get_client().chat.completions.create(
+            model=settings.llm_model,
+            temperature=0,
+            response_format={"type": "json_object"},
+            messages=[{"role": "user", "content": prompt}],
+        )
+        return RouteDecision.model_validate_json(resp.choices[0].message.content).route
+    except (OpenAIError, ValidationError, ValueError, TypeError):
+        # if routing fails, search as before: a wrong "papers" costs a search, a wrong
+        # "chat"/"off_topic" would hide a real answer
+        log.warning("Routing failed; treating the message as a paper question", exc_info=True)
+        return "papers"
+
+
 def rewrite(state: RAGState) -> dict:
-    """Turn a follow-up into a standalone query, and optionally pick one paper to search."""
+    """Decide the route (papers / chat / off_topic) and, for follow-ups, turn the question
+    into a standalone query. With history both come from one LLM call."""
     question = state["question"]
     history = state.get("history") or []
 
-    if not history:                                   # nothing to resolve → no LLM call
-        return {"query": question, "paper_filter": None}
+    if not history:                                   # nothing to resolve: only route it
+        route = classify(question)
+        log.info("route: %r -> %s", question, route)
+        return {"route": route, "standalone": question, "query": question, "paper_filter": None}
 
     papers = paper_catalog()
     prompt = REWRITE_PROMPT.format(
-        papers="\n".join(f"- {pid}: {title}" for pid, title in papers.items()) or "(unknown)",
+        papers=_papers_list(),
         history=_format_history(history),
         question=question,
+        route_rules=ROUTE_RULES,
     )
     try:
         resp = get_client().chat.completions.create(
@@ -85,14 +126,49 @@ def rewrite(state: RAGState) -> dict:
     except (OpenAIError, ValidationError, ValueError, TypeError):
         # never break the chat because of the rewrite: fall back to the raw question
         log.warning("Query rewrite failed; using the original question", exc_info=True)
-        return {"query": question, "paper_filter": None}
+        return {"route": "papers", "standalone": question, "query": question, "paper_filter": None}
+
+    if out.route != "papers":
+        log.info("route: %r -> %s", question, out.route)
+        return {"route": out.route, "standalone": question, "query": question, "paper_filter": None}
 
     query = out.query.strip() or question
     paper = out.paper if out.paper in papers else None    # ignore invented ids
     if not settings.rewrite_paper_filter:
         paper = None                                       # filter disabled (see config)
     log.info("rewrite: %r -> %r (paper=%s)", question, query, paper)
-    return {"query": query, "paper_filter": paper}
+    return {"route": "papers", "standalone": query, "query": query, "paper_filter": paper}
+
+
+def route_after_rewrite(state: RAGState) -> Literal["retrieve", "small_talk", "abstain"]:
+    """Conditional edge: only paper questions are searched."""
+    route = state.get("route", "papers")
+    if route == "chat":
+        return "small_talk"
+    if route == "off_topic":
+        return "abstain"
+    return "retrieve"
+
+
+def small_talk(state: RAGState) -> dict:
+    """Reply to greetings, thanks and questions about the bot, without searching."""
+    prompt = SMALL_TALK_PROMPT.format(
+        papers="\n".join(f"- {title}" for title in paper_catalog().values()) or "(unknown)",
+        history=_format_history(state.get("history") or []) or "(none)",
+        question=state["question"],
+    )
+    try:
+        resp = get_client().chat.completions.create(
+            model=settings.llm_model,
+            temperature=0.3,
+            max_tokens=200,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        answer = (resp.choices[0].message.content or "").strip()
+    except (OpenAIError, ValueError, TypeError, AttributeError, IndexError):
+        log.warning("Small-talk reply failed; using the default reply", exc_info=True)
+        answer = ""
+    return {"answer": answer or SMALL_TALK_FALLBACK, "chunks": []}
 
 
 def retrieve(state: RAGState) -> dict:
@@ -113,8 +189,10 @@ def answer_question(state: RAGState) -> str:
     """The question the generator answers: the user's own words, plus how they were
     interpreted when rewritten (the generator doesn't see the chat history).
     Shared by the generate node and the streaming API."""
-    question, query = state["question"], state.get("query", state["question"])
-    return question if query == question else f"{question}\n(Interpreted as: {query})"
+    # the standalone question, not a retry's search query: a reformulation is only for search
+    question = state["question"]
+    standalone = state.get("standalone") or state.get("query") or question
+    return question if standalone == question else f"{question}\n(Interpreted as: {standalone})"
 
 
 def generate(state: RAGState) -> dict:
@@ -132,8 +210,11 @@ def grade(state: RAGState) -> dict:
         f"[{i}] ({c.title}, {c.section})\n{c.text[:MAX_PASSAGE_CHARS]}"
         for i, c in enumerate(chunks, 1)
     )
-    # grade against the standalone query: "How is it trained?" can't be judged on its own
-    prompt = GRADE_PROMPT.format(question=state.get("query", state["question"]), passages=passages)
+    # Grade against the standalone question: "How is it trained?" can't be judged on its own.
+    # Not against a retry's reformulated query: if a retry drifted to another topic, its
+    # passages must not count as relevant to what the user asked.
+    question = state.get("standalone") or state.get("query") or state["question"]
+    prompt = GRADE_PROMPT.format(question=question, passages=passages)
     try:
         resp = get_client().chat.completions.create(
             model=settings.llm_model,

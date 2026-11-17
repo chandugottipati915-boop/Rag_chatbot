@@ -21,15 +21,24 @@ def chunk(n: int, arxiv_id: str = "2310.11511") -> RetrievedChunk:
 
 
 class FakeLLM:
-    """Returns the queued JSON replies in order; an Exception in the queue is raised."""
+    """Returns the queued JSON replies in order; an Exception in the queue is raised.
 
-    def __init__(self, *replies):
-        self.replies, self.prompts = list(replies), []
+    Routing calls for first messages are answered with `self.route` without using the
+    queue, so tests about search and grading don't need to queue them."""
+
+    def __init__(self, *replies, route="papers"):
+        self.replies, self.prompts, self.route = list(replies), [], route
         self.chat = self.completions = self
 
     def create(self, **kwargs):
-        self.prompts.append(kwargs["messages"][-1]["content"])
-        reply = self.replies.pop(0)
+        prompt = kwargs["messages"][-1]["content"]
+        if prompt.startswith("Classify the user's latest message"):
+            self.routed = True
+            return self._reply({"route": self.route} if not isinstance(self.route, Exception) else self.route)
+        self.prompts.append(prompt)
+        return self._reply(self.replies.pop(0))
+
+    def _reply(self, reply):
         if isinstance(reply, Exception):
             raise reply
         content = reply if isinstance(reply, str) else json.dumps(reply)
@@ -53,8 +62,8 @@ def fake(monkeypatch):
     monkeypatch.setattr(nodes, "llm_generate", fake_generate)
     monkeypatch.setattr(nodes, "paper_catalog", lambda: {"2310.11511": "Self-RAG", "2401.15884": "CRAG"})
 
-    def use_llm(*replies):
-        llm = FakeLLM(*replies)
+    def use_llm(*replies, route="papers"):
+        llm = FakeLLM(*replies, route=route)
         monkeypatch.setattr(nodes, "get_client", lambda: llm)
         return llm
 
@@ -200,3 +209,64 @@ def test_paper_filter_is_off_by_default(fake):
     assert out["paper_filter"] is None                     # but no paper restriction
     assert fake.retrieve_calls[0] == ("How is Self-RAG trained?", None)
 
+
+
+# ------------------------------------------------------------------ routing
+
+def test_greeting_skips_search_and_gets_a_small_talk_reply(fake):
+    llm = fake.use_llm("Hi! Ask me about the RAG papers.", route="chat")   # small-talk reply
+    out = run("hi")
+    assert out["answer"] == "Hi! Ask me about the RAG papers."
+    assert fake.retrieve_calls == [] and fake.generated_with is None
+    assert "is small talk, not a research question: hi" in llm.prompts[0]
+
+
+def test_small_talk_failure_uses_the_default_reply(fake):
+    fake.use_llm(OpenAIError("down"), route="chat")
+    assert run("thanks!")["answer"] == nodes.SMALL_TALK_FALLBACK
+
+
+def test_off_topic_is_refused_without_searching(fake):
+    llm = fake.use_llm(route="off_topic")
+    out = run("What is a good pancake recipe?")
+    assert out["answer"] == NO_ANSWER
+    assert fake.retrieve_calls == [] and llm.prompts == []         # no search, no grading
+
+
+def test_routing_failure_falls_back_to_searching(fake):
+    fake.use_llm({"relevant": [1]}, route=OpenAIError("down"))
+    out = run("What is Self-RAG?")
+    assert len(fake.retrieve_calls) == 1 and fake.generated_with is not None
+
+
+def test_follow_up_small_talk_is_not_turned_into_a_research_question(fake):
+    # the rewrite call routes follow-ups too: no separate routing call
+    llm = fake.use_llm({"query": "How is Self-RAG trained?", "paper": None, "route": "chat"},
+                       "You're welcome!")
+    out = run("thanks!", HISTORY)
+    assert out["answer"] == "You're welcome!"
+    assert out["query"] == "thanks!" and fake.retrieve_calls == []
+    assert not getattr(llm, "routed", False)
+
+
+def test_retry_cannot_change_the_topic(fake):
+    """The bug behind "hi" → HyDE: a retry's reformulated query must not decide relevance."""
+    llm = fake.use_llm({"relevant": []},                                # grade #1 (Self-RAG question)
+                       {"query": "HyDE hypothetical document embeddings"},  # a drifting reformulation
+                       {"relevant": []})                                 # grade #2
+    out = run("How does Self-RAG critique its outputs?")
+    assert fake.retrieve_calls[1][0] == "HyDE hypothetical document embeddings"   # searched with it...
+    assert "Question: How does Self-RAG critique its outputs?" in llm.prompts[-1]  # ...but graded on the user's question
+    assert out["answer"] == NO_ANSWER
+
+
+def test_generator_sees_the_standalone_question_not_the_retry_query(fake):
+    fake.use_llm({"relevant": []}, {"query": "Self-RAG reflection token training"}, {"relevant": [1]})
+    run("How does Self-RAG learn to critique?")
+    assert fake.generated_with[0] == "How does Self-RAG learn to critique?"
+
+
+def test_graph_has_the_router_edges():
+    mermaid = get_graph().get_graph().draw_mermaid()
+    for edge in ("rewrite -.-> retrieve", "rewrite -.-> small_talk", "rewrite -.-> abstain"):
+        assert edge in mermaid, edge

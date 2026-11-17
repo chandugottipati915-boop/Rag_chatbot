@@ -37,12 +37,19 @@ class FakeLLM:
     def __init__(self):
         self.relevant = [1]                                     # grader keeps chunk 1
         self.rewrite = {"query": "How does RAG-Token work?", "paper": "2005.11401"}
+        self.route = "papers"                                   # for first messages
         self.calls = []
         self.chat = self.completions = self
 
     def create(self, **kwargs):
         prompt = kwargs["messages"][-1]["content"]
-        if "standalone search query" in prompt:
+        if prompt.startswith("Classify the user's latest message"):
+            kind, reply = "route", {"route": self.route}
+        elif "is small talk, not a research question" in prompt:
+            self.calls.append("small_talk")
+            return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(
+                content="Hi! Ask me about the RAG papers."))])
+        elif "standalone search query" in prompt:
             kind, reply = "rewrite", self.rewrite
         elif "found nothing relevant" in prompt:
             kind, reply = "reformulate", {"query": "RAG-Token marginalization"}
@@ -218,7 +225,7 @@ def test_chat_abstains_after_one_retry_when_nothing_is_relevant(client, llm, ret
     body = client.post("/chat", json={"question": "How many minutes are in an hour?"}).json()
     assert body["answer"] == NO_ANSWER
     assert body["sources"] == [] and body["retries"] == 1
-    assert llm.calls == ["grade", "reformulate", "grade"] and len(retrieved) == 2
+    assert llm.calls == ["route", "grade", "reformulate", "grade"] and len(retrieved) == 2
 
 
 def test_user_chosen_paper_is_never_dropped(client, llm, retrieved):
@@ -276,3 +283,22 @@ def test_stream_sources_include_passage_text(client):
     events = parse_sse(client.post("/chat/stream", json={"question": "What is RAG-Token?"}).text)
     assert events[0][0] == "sources"
     assert events[0][1][0]["text"] == CHUNK.text     # the UI shows it when a citation is clicked
+
+
+# ---------------------------------------------------------------- routing (small talk, off-topic)
+
+def test_greeting_gets_a_reply_without_searching(client, llm, retrieved, monkeypatch):
+    llm.route = "chat"
+    monkeypatch.setattr(api, "generate_stream", lambda q, c: (_ for _ in ()).throw(AssertionError("no generation")))
+    events = parse_sse(client.post("/chat/stream", json={"question": "hi"}).text)
+    assert events[0] == ("sources", [])
+    assert events[1] == ("token", "Hi! Ask me about the RAG papers.")
+    assert events[-1][0] == "done"
+    assert retrieved == [] and llm.calls == ["route", "small_talk"]
+
+
+def test_off_topic_is_refused_without_searching(client, llm, retrieved):
+    llm.route = "off_topic"
+    body = client.post("/chat", json={"question": "What is a good pancake recipe?"}).json()
+    assert body["answer"] == NO_ANSWER and body["sources"] == []
+    assert retrieved == [] and llm.calls == ["route"]           # one cheap call instead of a search + retry

@@ -25,22 +25,26 @@ PDFs ──► unstructured (partition + chunk by section) ──► OpenAI embe
 question + history
    │
    ▼
-rewrite ──► retrieve ──► grade ──┬── relevant chunks ─────────────► generate ──► cited answer
-              ▲                  ├── nothing relevant, retry left ─► reformulate ─┐
-              └──────────────────┼────────────────────────────────────────────────┘
-                                 └── nothing relevant, no retry ───► abstain ───► "I don't know…"
+rewrite ─┬─ chat ──────► small_talk ──► short reply, no search ("hi", "thanks", "what can you do?")
+(routes) ├─ off_topic ─► abstain ─────► "I don't know…" without searching
+         └─ papers ────► retrieve ──► grade ──┬── relevant chunks ─────────────► generate ──► cited answer
+                           ▲                  ├── nothing relevant, retry left ─► reformulate ─┐
+                           └──────────────────┼────────────────────────────────────────────────┘
+                                              └── nothing relevant, no retry ───► abstain ───► "I don't know…"
 ```
 
 | Step | What it does | Why |
 |---|---|---|
-| **rewrite** | Turns a follow-up ("How is it trained?") into a standalone query ("How is Self-RAG trained?") using the last turns. No LLM call when there is no history. | Retrieval only sees one message; without this, follow-ups retrieve the wrong papers. |
+| **rewrite** | Routes every message: paper question, small talk, or off-topic. For follow-ups, the same call turns "How is it trained?" into "How is Self-RAG trained?". A first message needs one small routing call. | Small talk used to be searched like a question ("hi" once came back as an answer about HyDE); off-topic questions paid for a search and a retry before being refused. Retrieval only sees one message, so follow-ups must be made standalone. |
+| **small_talk** | A short friendly reply that says what the bot can do, without searching or stating facts. | Greetings and thanks aren't questions about the papers. |
 | **retrieve** | Hybrid search (dense + BM25, fused with RRF), 20 candidates reranked by a cross-encoder to the top 5. | Dense search misses rare terms (CRAG, MaxSim); the reranker fixes the ordering. |
-| **grade** | One LLM call keeps only the chunks that actually help answer the question. | Stops wrong-paper chunks (e.g. CRAG's appendix mentioning Self-RAG) from reaching the answer. |
+| **grade** | One LLM call keeps only the chunks that actually help answer the question, judged against the user's (standalone) question, never a retry's search query. | Stops wrong-paper chunks (e.g. CRAG's appendix mentioning Self-RAG) from reaching the answer, and stops a drifting retry from changing the topic. |
 | **reformulate** | If nothing is relevant, writes one different search query and retrieves again (max 1 retry). | Gives missed questions a second chance at bounded cost. |
 | **generate / abstain** | Answers from the graded chunks with `[n]` citations, corrects false premises, or refuses without an LLM call. | Grounded answers; honest refusals when the papers don't cover the question. |
 
-Every LLM step falls back safely: a failed rewrite uses the original question, a failed
-grade keeps all chunks, a failed reformulation retries with the original question.
+Every LLM step falls back safely: a failed routing call searches as before, a failed rewrite
+uses the original question, a failed grade keeps all chunks, a failed reformulation retries with
+the original question, a failed small-talk reply uses a default one.
 
 ## Results
 
@@ -83,8 +87,9 @@ irrelevant chunks no longer reach the generator.
 
 Retrieval with reranking takes ~1.3 s of this; grading and generation are `gpt-4o-mini` calls.
 `/chat/stream` sends the sources as soon as grading finishes and then streams the answer,
-so users see output well before the full time. Off-topic questions are the slowest because
-they pay for the retry before being refused (a router step could skip this).
+so users see output well before the full time. These numbers predate the router: off-topic
+questions are now refused after one small routing call instead of a search and a retry, and
+first messages pay that call (~0.3–0.5 s) before searching. Re-run `scripts/bench_latency.py --graph`.
 
 **Known limitations**
 - False premises in single questions are corrected only 1 in 4 times (`gpt-4o-mini` tends to refuse).
@@ -183,7 +188,7 @@ turn then becomes one trace:
 ```
 chat_stream                      metadata: conversation_id, top_k, retrieval_mode, rerank, llm_model
 ├── LangGraph
-│   ├── rewrite ── ChatOpenAI    (only for follow-ups)
+│   ├── rewrite ── ChatOpenAI    (routes; also rewrites follow-ups)
 │   ├── retrieve
 │   ├── grade ──── ChatOpenAI
 │   └── route_after_grade
@@ -197,11 +202,12 @@ thread. Tests force tracing off (`tests/conftest.py`).
 ## Testing and evaluation
 
 ```bash
-uv run pytest -q                                   # 52 tests: API + graph, all external services faked
+uv run pytest -q                                   # 62 tests: API + graph, all external services faked
 (cd frontend && npm test)                          # 10 UI unit tests: SSE parser, citations, saved chats
 uv run python eval/eval_retriever.py               # contextual precision & recall
 uv run python eval/eval_generator.py               # faithfulness, relevancy, correct behavior (through the graph)
 uv run python eval/eval_multiturn.py               # follow-ups, with vs without history
+uv run python eval/eval_router.py                  # routing: papers / small talk / off-topic (no Qdrant needed)
 uv run python scripts/bench_latency.py --graph     # full-graph latency
 bash scripts/run_eval.sh hybrid+rerank             # ingest + latency + retrieval & generator evals for a setup
 ```
@@ -233,8 +239,8 @@ src/rag/
     chunker.py         PDF → section-aware chunks + metadata
     pipeline.py        PDFs → chunks → vectors → Qdrant
 scripts/               download, ingest, try the graph, retrieval checks, latency, eval runner
-eval/                  three eval scripts + notes and comparison tables
-goldens/               retrieval, generator and multi-turn golden sets
+eval/                  four eval scripts (retrieval, generator, multi-turn, router) + notes
+goldens/               retrieval, generator, multi-turn and router golden sets
 tests/                 API, graph and chat-history tests
 migrations/            Alembic migrations for the chat-history tables
 frontend/              Next.js chat UI (see frontend/README.md)

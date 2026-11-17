@@ -13,7 +13,9 @@ class RAGState(TypedDict, total=False):
     arxiv_id: str | None         # optional: user-chosen paper; unlike paper_filter, never dropped
 
     # filled in by nodes
-    query: str                   # standalone search query (from rewrite)
+    route: str                   # "papers" | "chat" | "off_topic" (from rewrite)
+    standalone: str              # the question in standalone form (from rewrite); never changed after
+    query: str                   # search query: the standalone question, or a reformulation of it
     paper_filter: str | None     # arXiv id to restrict retrieval to, or None
     chunks: list[RetrievedChunk] # from retrieval (graded chunks from C2 on)
     answer: str

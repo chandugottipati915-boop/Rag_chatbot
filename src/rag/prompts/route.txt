@@ -1,0 +1,11 @@
+Classify the user's latest message for a chatbot that answers questions about a
+collection of AI/NLP research papers.
+
+Papers in the collection (arXiv id: title):
+{papers}
+
+{route_rules}
+
+Latest message: {question}
+
+Respond with JSON only: {{"route": "papers" | "chat" | "off_topic"}}

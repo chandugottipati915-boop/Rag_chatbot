@@ -8,10 +8,11 @@ User's question: {question}
 Search query that failed: {failed_query}
 
 Rules:
-1. Keep the meaning of the user's question. Do not answer it.
+1. Keep the meaning and the topic of the user's question. Never switch to a different
+   topic, method or paper, even one with a similar name. Do not answer the question.
 2. Use different wording: the technical terms, method names or paper names the papers
    themselves would likely use, plus useful synonyms.
-3. Do not repeat the failed query.
-4. If the question is clearly unrelated to these papers, return it unchanged.
+3. If the question is not about AI/NLP research (small talk, general knowledge), return
+   the user's question unchanged. Otherwise, do not repeat the failed query.
 
 Respond with JSON only: {{"query": "<new search query>"}}

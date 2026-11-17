@@ -1,9 +1,13 @@
 """RAG graph.
 
-    START → rewrite → retrieve → grade ──┬── relevant chunks           → generate → END
-                                ▲        ├── none relevant, retry left → reformulate ┐
-                                └────────┼───────────────────────────────────────────┘
-                                         └── none relevant, no retry   → abstain  → END
+    START → rewrite ─┬─ papers    → retrieve → grade ─┬─ relevant chunks           → generate → END
+                     │                ▲               ├─ none relevant, retry left → reformulate ┐
+                     │                └───────────────┼──────────────────────────────────────────┘
+                     │                                └─ none relevant, no retry   → abstain → END
+                     ├─ chat      → small_talk → END     (greetings, thanks, "what can you do?")
+                     └─ off_topic → abstain → END        (refused without searching)
+
+rewrite routes every message; for follow-ups it also makes the question standalone.
 
 Two compiled versions:
 - get_graph():           the full pipeline, used by /chat, scripts and evals.
@@ -23,6 +27,7 @@ def _build(with_generate: bool):
     builder = StateGraph(RAGState)
 
     builder.add_node("rewrite", nodes.rewrite)
+    builder.add_node("small_talk", nodes.small_talk)
     builder.add_node("retrieve", nodes.retrieve)
     builder.add_node("grade", nodes.grade)
     builder.add_node("reformulate", nodes.reformulate)
@@ -31,7 +36,12 @@ def _build(with_generate: bool):
         builder.add_node("generate", nodes.generate)
 
     builder.add_edge(START, "rewrite")
-    builder.add_edge("rewrite", "retrieve")
+    builder.add_conditional_edges("rewrite", nodes.route_after_rewrite, {
+        "retrieve": "retrieve",
+        "small_talk": "small_talk",
+        "abstain": "abstain",
+    })
+    builder.add_edge("small_talk", END)
     builder.add_edge("retrieve", "grade")
     # decision point: route_after_grade returns "generate", "reformulate" or "abstain".
     # Without a generate node, "generate" means "stop here, the caller will generate".

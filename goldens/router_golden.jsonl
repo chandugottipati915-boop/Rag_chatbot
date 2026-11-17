@@ -1,0 +1,23 @@
+{"id": "r01", "question": "hi", "history": [], "expected": ["chat"]}
+{"id": "r02", "question": "Hello!", "history": [], "expected": ["chat"]}
+{"id": "r03", "question": "hey there", "history": [], "expected": ["chat"]}
+{"id": "r04", "question": "good morning", "history": [], "expected": ["chat"]}
+{"id": "r05", "question": "What can you do?", "history": [], "expected": ["chat"]}
+{"id": "r06", "question": "Which papers do you know about?", "history": [], "expected": ["chat"]}
+{"id": "r07", "question": "who are you?", "history": [], "expected": ["chat"]}
+{"id": "r08", "question": "thanks!", "history": [{"role": "user", "content": "What is HyDE?"}, {"role": "assistant", "content": "HyDE generates a hypothetical document for the query and embeds it to search [1]."}], "expected": ["chat"]}
+{"id": "r09", "question": "ok cool", "history": [{"role": "user", "content": "What is ColBERT?"}, {"role": "assistant", "content": "ColBERT is a late-interaction retrieval model [1]."}], "expected": ["chat"]}
+{"id": "r10", "question": "hi", "history": [{"role": "user", "content": "What is HyDE?"}, {"role": "assistant", "content": "HyDE generates a hypothetical document for the query and embeds it to search [1]."}], "expected": ["chat"]}
+{"id": "r11", "question": "bye, that was helpful", "history": [{"role": "user", "content": "What is RAGAS?"}, {"role": "assistant", "content": "RAGAS is a framework for evaluating RAG pipelines without human labels [1]."}], "expected": ["chat"]}
+{"id": "r12", "question": "Hi! How does Self-RAG decide when to retrieve?", "history": [], "expected": ["papers"]}
+{"id": "r13", "question": "thanks! and how is it trained?", "history": [{"role": "user", "content": "What is Self-RAG?"}, {"role": "assistant", "content": "Self-RAG trains a model to decide when to retrieve and to critique its outputs [1]."}], "expected": ["papers"]}
+{"id": "r14", "question": "What is attention in transformers?", "history": [], "expected": ["papers"]}
+{"id": "r15", "question": "How should I chunk PDFs for a RAG system?", "history": [], "expected": ["papers"]}
+{"id": "r16", "question": "hyde?", "history": [], "expected": ["papers"]}
+{"id": "r17", "question": "How many minutes are in an hour?", "history": [], "expected": ["off_topic"]}
+{"id": "r18", "question": "What is the capital of France?", "history": [], "expected": ["off_topic"]}
+{"id": "r19", "question": "Who won the most recent football World Cup?", "history": [], "expected": ["off_topic"]}
+{"id": "r20", "question": "What is a good recipe for pancakes?", "history": [], "expected": ["off_topic"]}
+{"id": "r21", "question": "How do I reset my router?", "history": [], "expected": ["off_topic"]}
+{"id": "r22", "question": "What's 17 times 23?", "history": [], "expected": ["off_topic"]}
+{"id": "r23", "question": "Can you recommend a good movie for tonight?", "history": [{"role": "user", "content": "What is BERT?"}, {"role": "assistant", "content": "BERT is a bidirectional Transformer encoder pre-trained with masked language modeling [1]."}], "expected": ["off_topic"]}

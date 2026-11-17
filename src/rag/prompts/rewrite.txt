@@ -21,5 +21,10 @@ Rules:
    apart from fixing references.
 4. Set "paper" to one arXiv id from the list ONLY if the question is clearly about that
    single paper. If it is about several papers, or you are unsure, use null.
+5. Set "route" for the latest message. For "chat" and "off_topic", return the message
+   unchanged as "query": never turn small talk into a research question.
 
-Respond with JSON only: {{"query": "<standalone question>", "paper": "<arXiv id>" or null}}
+{route_rules}
+
+Respond with JSON only:
+{{"query": "<standalone question>", "paper": "<arXiv id>" or null, "route": "papers" | "chat" | "off_topic"}}

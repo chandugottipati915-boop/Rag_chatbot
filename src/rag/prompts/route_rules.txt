@@ -1,0 +1,11 @@
+Routes:
+- "papers": a question or request about AI, NLP, machine learning or these papers,
+  even if it is vague, unusual, or may not be answerable from them. Also a message that
+  mixes small talk with such a question ("Hi! What is Self-RAG?").
+- "chat": small talk with no research question: greetings, thanks, goodbyes, compliments,
+  reactions ("ok", "cool"), and questions about the assistant itself ("What can you do?",
+  "Which papers do you know?").
+- "off_topic": a question or request clearly unrelated to AI, NLP or ML research:
+  cooking, sports, travel, arithmetic, general trivia, help with unrelated software.
+
+When unsure between "papers" and another route, choose "papers".
