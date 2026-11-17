@@ -59,9 +59,11 @@ and unanswerable ones) and **multi-turn** (14 conversations). Judge: `gpt-4o-min
 |---|---|---|---|---|
 | Baseline (first prompt) | 0.899 | 0.843 | — | 5 |
 | Hybrid + rerank, new prompt | 0.902 | 0.966 | 0.715 | 1 |
-| **Full graph** | TBD | TBD | TBD | TBD |
+| **Full graph** | **0.928** | 0.948 | 0.703 | 1 |
 
-Unanswerable questions are refused 4/4 in every setup since the prompt fix.
+Unanswerable questions are refused 4/4 in every setup since the prompt fix. Through the graph,
+2 of 43 questions needed the retry step; grading lifts faithfulness (0.902 → 0.928) because
+irrelevant chunks no longer reach the generator.
 
 **Multi-turn** (14 conversations; the same follow-up sent with and without the earlier turns)
 
@@ -74,8 +76,13 @@ Unanswerable questions are refused 4/4 in every setup since the prompt fix.
 
 | Questions | p50 | p95 |
 |---|---|---|
-| Paper questions | TBD | TBD |
-| Off-topic (grade → retry → abstain) | TBD | TBD |
+| Paper questions (33) | 4.4 s | 5.7 s |
+| Off-topic (grade → retry → abstain) | 5.5 s | 6.0 s |
+
+Retrieval with reranking takes ~1.3 s of this; grading and generation are `gpt-4o-mini` calls.
+`/chat/stream` sends the sources as soon as grading finishes and then streams the answer,
+so users see output well before the full time. Off-topic questions are the slowest because
+they pay for the retry before being refused (a router step could skip this).
 
 **Known limitations**
 - False premises in single questions are corrected only 1 in 4 times (`gpt-4o-mini` tends to refuse).

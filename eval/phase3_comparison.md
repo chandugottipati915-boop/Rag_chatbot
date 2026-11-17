@@ -103,7 +103,39 @@ Remaining: comparisons sometimes retrieve one side only (m06, behavior 0.48).
 No regressions: unanswerable questions still refused 4/4; false refusals 1 (g33).
 The premise check fixed m13 (multi-turn) but not single-question false premises (still 1/4).
 
-### Full graph (TBD: run on the laptop)
+### Generator eval through the full graph (2026-11-17)
 
-- `uv run python eval/eval_generator.py` (now runs through the graph by default)
-- `uv run python scripts/bench_latency.py --graph`
+| Group | Faithfulness | Relevancy | Correct behavior |
+|---|---|---|---|
+| answer (33) | **0.928** | 0.948 | 0.703 (22/33) |
+| correct_premise (4) | 0.917 | 0.202 | 0.401 (1/4) |
+| abstain (4) | 1.000 | 0.000 | 1.000 (4/4) |
+| clarify_or_cover (2) | 1.000 | 1.000 | 0.191 (0/2) |
+
+vs. the direct pipeline: faithfulness +0.026 (grading keeps irrelevant chunks out), relevancy and
+correct behavior within noise. False refusals 1 (g33), unanswerable not refused 0.
+Retries used: g34 (false premise) and g40 (off-topic).
+
+### Latency, full graph (laptop)
+
+| Questions | p50 | p95 | max | Notes |
+|---|---|---|---|---|
+| Paper questions (33) | 4441 ms | 5652 ms | 8793 ms | retries used 2/33 |
+| Off-topic (5) | 5466 ms | 5965 ms | 5965 ms | refused 4/5 |
+
+The off-topic set had one question where some chunk passed grading, so it was answered or
+refused by the generator instead of the abstain step; worth checking which one.
+
+### Phase 3 summary
+
+| | Start of Phase 3 | End of Phase 3 |
+|---|---|---|
+| Retrieval precision / recall | 0.708 / 0.956 | **0.881 / 0.969** |
+| Generator faithfulness / relevancy (answerable) | 0.899 / 0.843 | **0.928 / 0.948** |
+| False refusals | 5 | **1** |
+| Unanswerable refused | 4/4 | 4/4 |
+| Follow-up paper hit (multi-turn) | not supported | **1.00** (0.62 without history) |
+| Latency (full answer, p50) | not measured (retrieval alone: 1.3 s) | 4.4 s |
+
+Open issues for later: single-question false premises (1/4), ambiguous questions (0/2),
+one-sided comparisons (m06), the "21 million documents" detail (g33 / m05), off-topic latency.
