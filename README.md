@@ -108,7 +108,7 @@ Details and per-question notes: [`eval/phase3_comparison.md`](eval/phase3_compar
 
 Python 3.12 · uv · unstructured · OpenAI (`text-embedding-3-small`, `gpt-4o-mini`) · Qdrant
 (dense + BM25, RRF) · sentence-transformers cross-encoder (`BAAI/bge-reranker-base`) ·
-LangGraph · FastAPI · Postgres (SQLAlchemy 2, Alembic) · DeepEval · pytest · Next.js 16 (React 19, TypeScript, Tailwind v4) · Vitest
+LangGraph · FastAPI · Postgres (SQLAlchemy 2, Alembic) · LangSmith · DeepEval · pytest · Next.js 16 (React 19, TypeScript, Tailwind v4) · Vitest
 
 ## Setup
 
@@ -175,10 +175,29 @@ curl -s -X POST localhost:8000/chat -H "Content-Type: application/json" -d '{
 
 Errors: `404` unknown conversation · `422` invalid input · `502` LLM provider failed · `503` vector store unavailable · `409` ingestion already running.
 
+## Tracing (LangSmith)
+
+Set `LANGSMITH_TRACING=true`, `LANGSMITH_API_KEY` and `LANGSMITH_PROJECT` in `.env`. Each chat
+turn then becomes one trace:
+
+```
+chat_stream                      metadata: conversation_id, top_k, retrieval_mode, rerank, llm_model
+├── LangGraph
+│   ├── rewrite ── ChatOpenAI    (only for follow-ups)
+│   ├── retrieve
+│   ├── grade ──── ChatOpenAI
+│   └── route_after_grade
+└── generate ───── ChatOpenAI    (streamed; prompt, answer, tokens, cost)
+```
+
+LangGraph traces the nodes by itself; `wrap_openai` traces every LLM call; `rag/tracing.py`
+groups a turn under one parent run. Turns share `conversation_id`, so a chat shows up as a
+thread. Tests force tracing off (`tests/conftest.py`).
+
 ## Testing and evaluation
 
 ```bash
-uv run pytest -q                                   # 50 tests: API + graph, all external services faked
+uv run pytest -q                                   # 52 tests: API + graph, all external services faked
 (cd frontend && npm test)                          # 10 UI unit tests: SSE parser, citations, saved chats
 uv run python eval/eval_retriever.py               # contextual precision & recall
 uv run python eval/eval_generator.py               # faithfulness, relevancy, correct behavior (through the graph)
@@ -206,6 +225,7 @@ src/rag/
     models.py          conversations + messages tables (SQLAlchemy)
     session.py         engine and per-request session
     repo.py            chat-history queries
+  tracing.py           LangSmith: one trace per chat turn
   api/
     main.py            FastAPI routes
     schemas.py         request / response models
@@ -228,11 +248,11 @@ frontend/              Next.js chat UI (see frontend/README.md)
 - [x] **Phase 1**: ingestion, retrieval, cited generation, evaluated baseline
 - [x] **Phase 2**: FastAPI backend with streaming answers
 - [x] **Phase 3**: hybrid search + reranking, LangGraph (rewrite, grade, retry), multi-turn chat, three eval sets
-- [ ] **Phase 4**: Next.js chat UI, chat history (Postgres), auth, tracing (Langfuse)
+- [ ] **Phase 4**: Next.js chat UI, chat history (Postgres), auth, tracing (LangSmith)
   - [x] Chat UI: streaming answers, clickable citations, paper filter, browser-saved history
   - [x] Server-side chat history (Postgres, Alembic migrations)
   - [ ] Auth
-  - [ ] Tracing (Langfuse)
+  - [x] Tracing (LangSmith)
 - [ ] **Phase 5**: Docker Compose, CI with eval gates, guardrails, cloud deployment
 
 > Answers come from the papers in `data/raw` only and may be incomplete. Not a substitute for reading the papers.

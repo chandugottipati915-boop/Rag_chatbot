@@ -42,3 +42,6 @@ next-env.d.ts
 
 # example env file is safe to commit
 !.env.example
+
+# written by `next dev` (Next.js notes for coding agents)
+AGENTS.md

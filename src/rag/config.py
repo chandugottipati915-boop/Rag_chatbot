@@ -1,10 +1,16 @@
 from pathlib import Path
 from typing import Literal
 
+from dotenv import load_dotenv
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # project root = the folder containing pyproject.toml (src/rag/config.py -> ../../)
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
+
+# pydantic-settings reads .env into `settings` only. Libraries that read the process
+# environment themselves (LangSmith: LANGSMITH_TRACING, LANGSMITH_API_KEY, ...) need it
+# exported too. override=False: variables already set in the shell win.
+load_dotenv(PROJECT_ROOT / ".env", override=False)
 
 
 class Settings(BaseSettings):

@@ -16,6 +16,7 @@ from datetime import datetime, timezone
 from fastapi import Depends, FastAPI, HTTPException, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse, StreamingResponse
+import langsmith as ls
 from openai import OpenAIError
 from sqlalchemy import text
 from sqlalchemy.orm import Session
@@ -34,6 +35,7 @@ from rag.generation import generate_stream
 from rag.graph.build import get_graph, get_retrieval_graph
 from rag.graph.nodes import answer_question
 from rag.retrieval import RetrievedChunk, retrieve
+from rag.tracing import end_turn, start_turn, under
 
 log = logging.getLogger("rag.api")
 
@@ -120,6 +122,16 @@ def graph_info(req: ChatRequest, state: dict) -> dict:
             "retries": state.get("retries", 0)}
 
 
+@ls.traceable(name="generate", run_type="chain",
+              process_inputs=lambda i: {"question": i["question"], "passages": len(i["chunks"])})
+def stream_answer(question: str, chunks: list[RetrievedChunk]) -> Iterator[str]:
+    """generate_stream as a LangSmith child run (call with langsmith_extra={"parent": turn}).
+
+    A traceable generator keeps its tracing context across yields; a `with` block around
+    the streaming loop can't, because each piece may be produced in a different thread."""
+    yield from generate_stream(question, chunks)
+
+
 # ------------------------------------------------------------------ routes
 # Routes are plain `def`: retrieval and OpenAI calls block, so FastAPI runs
 # them in a thread pool and one slow request doesn't freeze the server.
@@ -190,7 +202,13 @@ def chat(req: ChatRequest, db: Session = Depends(get_db)) -> ChatResponse:
     if cid:
         conversation_or_404(db, cid)
         req = with_db_history(req, db)
-    state = run_graph(get_graph(), req)
+    turn = start_turn("chat", req)                # LangSmith parent run (None when tracing is off)
+    try:
+        with under(turn):
+            state = run_graph(get_graph(), req)
+    except HTTPException as e:
+        end_turn(turn, error=f"{e.status_code}: {e.detail}")
+        raise
     response = ChatResponse(
         question=req.question,
         answer=state["answer"],
@@ -204,6 +222,7 @@ def chat(req: ChatRequest, db: Session = Depends(get_db)) -> ChatResponse:
                          sources=[s.model_dump() for s in to_sources(state.get("chunks", []), include_text=True)],
                          meta={"latency_ms": response.latency_ms, "rewritten_query": response.rewritten_query,
                                "retries": response.retries})
+    end_turn(turn, outputs={"answer": response.answer, **graph_info(req, state)})
     return response
 
 
@@ -225,7 +244,13 @@ def chat_stream(req: ChatRequest, db: Session = Depends(get_db)) -> StreamingRes
 
     # rewrite → retrieve → grade (→ reformulate) runs before streaming starts,
     # so retrieval errors still return a normal 503
-    state = run_graph(get_retrieval_graph(), req)
+    turn = start_turn("chat_stream", req)         # LangSmith parent run (None when tracing is off)
+    try:
+        with under(turn):
+            state = run_graph(get_retrieval_graph(), req)
+    except HTTPException as e:
+        end_turn(turn, error=f"{e.status_code}: {e.detail}")
+        raise
     chunks = state.get("chunks", [])
     sources = [s.model_dump() for s in to_sources(chunks, include_text=True)]
     if cid:
@@ -250,22 +275,27 @@ def chat_stream(req: ChatRequest, db: Session = Depends(get_db)) -> StreamingRes
                 yield sse("token", state["answer"])
             else:
                 try:
-                    for piece in generate_stream(answer_question(state), chunks):
+                    for piece in stream_answer(answer_question(state), chunks,
+                                               langsmith_extra={"parent": turn}):
                         answer.append(piece)
                         yield sse("token", piece)
                 except OpenAIError:
                     # the 200 status is already sent, so report the failure as an event
                     log.exception("LLM stream failed")
+                    end_turn(turn, error="LLM provider error")
                     yield sse("error", {"message": "LLM provider error"})
                     return
             done = {"latency_ms": int((time.perf_counter() - t0) * 1000), **graph_info(req, state)}
             save_answer("".join(answer), done)      # save before `done`, so a reload right after finds it
             saved = True
+            end_turn(turn, outputs={"answer": "".join(answer), **done})
             yield sse("done", done)
         finally:
             # the client pressed Stop (disconnected) or the LLM failed: keep the partial answer
             if not saved:
                 save_answer("".join(answer), {"stopped": True})
+                if turn is not None and turn.end_time is None:
+                    end_turn(turn, outputs={"answer": "".join(answer)}, error="stopped by the client")
 
     return StreamingResponse(
         events(),

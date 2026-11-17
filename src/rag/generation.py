@@ -3,6 +3,7 @@ from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
 
+from langsmith.wrappers import wrap_openai
 from openai import OpenAI
 
 from rag.config import settings
@@ -16,8 +17,10 @@ NO_ANSWER = "I don't know based on the provided papers."
 
 @lru_cache
 def get_client() -> OpenAI:
-    # created on first use, so importing this module doesn't need an API key (tests rely on this)
-    return OpenAI(api_key=settings.openai_api_key)
+    # created on first use, so importing this module doesn't need an API key (tests rely on this).
+    # wrap_openai records every call (prompt, answer, tokens, cost) in LangSmith when
+    # LANGSMITH_TRACING=true, and does nothing otherwise.
+    return wrap_openai(OpenAI(api_key=settings.openai_api_key))
 
 
 @dataclass
@@ -71,6 +74,7 @@ def generate_stream(question: str, chunks: list[RetrievedChunk]) -> Iterator[str
         temperature=settings.llm_temperature,
         messages=_messages(question, chunks),
         stream=True,
+        stream_options={"include_usage": True},   # last chunk reports tokens (shown in LangSmith)
     )
     for event in stream:
         if event.choices and (piece := event.choices[0].delta.content):
