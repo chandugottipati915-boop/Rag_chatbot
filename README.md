@@ -4,9 +4,11 @@ Ask questions about 15 landmark papers (Transformers, BERT, DPR, ColBERT, RAG, S
 CRAG, GraphRAG, RAGAS, …) and get answers with citations to the paper, section and page.
 Follow-up questions work: the conversation is taken into account.
 
-**Status:** Phase 3. Hybrid retrieval with reranking, orchestrated as a LangGraph pipeline
-(query rewriting, relevance grading, one retry), served by a streaming FastAPI backend and
-measured with three evaluation sets.
+**Status:** Phase 4 in progress. Hybrid retrieval with reranking, orchestrated as a LangGraph
+pipeline (query rewriting, relevance grading, one retry), served by a streaming FastAPI backend,
+measured with three evaluation sets, and used through a Next.js chat UI.
+
+![The chat UI: an answer with numbered citations, and the cited passage highlighted in the margin](docs/ui.png)
 
 ## How it works
 
@@ -106,7 +108,7 @@ Details and per-question notes: [`eval/phase3_comparison.md`](eval/phase3_compar
 
 Python 3.12 · uv · unstructured · OpenAI (`text-embedding-3-small`, `gpt-4o-mini`) · Qdrant
 (dense + BM25, RRF) · sentence-transformers cross-encoder (`BAAI/bge-reranker-base`) ·
-LangGraph · FastAPI · DeepEval · pytest
+LangGraph · FastAPI · DeepEval · pytest · Next.js 16 (React 19, TypeScript, Tailwind v4) · Vitest
 
 ## Setup
 
@@ -129,6 +131,16 @@ uv run python scripts/try_retrieval.py "What is late interaction in ColBERT?"   
 uv run python scripts/inspect_chunks.py 2005.11401.pdf                          # check chunking for one paper
 ```
 
+## Chat UI
+
+```bash
+cd frontend && npm install && npm run dev          # http://localhost:3000 (the API must be running)
+```
+
+A Next.js app that streams answers from `/chat/stream`. Each `[n]` citation is a clickable
+mark that opens the cited passage in a side margin, follow-ups send the conversation history,
+and chats are saved in the browser. Details in [frontend/README.md](frontend/README.md).
+
 ## API
 
 ```bash
@@ -138,6 +150,7 @@ uv run uvicorn rag.api.main:app --app-dir src --reload     # interactive docs: h
 | Method | Path | What it does |
 |---|---|---|
 | GET | `/health` | Qdrant reachable + number of indexed chunks (`ok` / `degraded`) |
+| GET | `/papers` | The indexed papers (for the UI's paper filter) |
 | POST | `/search` | Retrieved chunks only, no LLM call |
 | POST | `/chat` | Full cited answer as JSON (runs the graph) |
 | POST | `/chat/stream` | Streamed answer via Server-Sent Events: `sources` → `token`… → `done` |
@@ -158,7 +171,8 @@ Errors: `422` invalid input · `502` LLM provider failed · `503` vector store u
 ## Testing and evaluation
 
 ```bash
-uv run pytest -q                                   # 40 tests: API + graph, all external services faked
+uv run pytest -q                                   # 43 tests: API + graph, all external services faked
+(cd frontend && npm test)                          # 7 UI unit tests: SSE parser, citations, history
 uv run python eval/eval_retriever.py               # contextual precision & recall
 uv run python eval/eval_generator.py               # faithfulness, relevancy, correct behavior (through the graph)
 uv run python eval/eval_multiturn.py               # follow-ups, with vs without history
@@ -191,6 +205,10 @@ scripts/               download, ingest, try the graph, retrieval checks, latenc
 eval/                  three eval scripts + notes and comparison tables
 goldens/               retrieval, generator and multi-turn golden sets
 tests/                 API and graph tests
+frontend/              Next.js chat UI (see frontend/README.md)
+  app/                 layout, page, global styles
+  components/          Chat, Answer, SourceList, Composer, Sidebar, ...
+  lib/                 API client, SSE parser, citation linking, storage
 ```
 
 ## Roadmap
@@ -199,6 +217,10 @@ tests/                 API and graph tests
 - [x] **Phase 2**: FastAPI backend with streaming answers
 - [x] **Phase 3**: hybrid search + reranking, LangGraph (rewrite, grade, retry), multi-turn chat, three eval sets
 - [ ] **Phase 4**: Next.js chat UI, chat history (Postgres), auth, tracing (Langfuse)
+  - [x] Chat UI: streaming answers, clickable citations, paper filter, browser-saved history
+  - [ ] Server-side chat history (Postgres)
+  - [ ] Auth
+  - [ ] Tracing (Langfuse)
 - [ ] **Phase 5**: Docker Compose, CI with eval gates, guardrails, cloud deployment
 
 > Answers come from the papers in `data/raw` only and may be incomplete. Not a substitute for reading the papers.

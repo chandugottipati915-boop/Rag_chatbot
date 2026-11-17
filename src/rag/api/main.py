@@ -21,7 +21,7 @@ from rag import vectorstore as vs
 from rag.config import settings
 from rag.api.schemas import (
     ChatRequest, ChatResponse, HealthResponse, IngestRequest,
-    IngestStatus, SearchResponse, Source,
+    IngestStatus, Paper, SearchResponse, Source,
 )
 from rag.embeddings import get_embedder
 from rag.generation import generate_stream
@@ -45,7 +45,7 @@ async def lifespan(app: FastAPI):
     yield
 
 
-app = FastAPI(title="RAG Chatbot API", version="0.3.0", lifespan=lifespan)
+app = FastAPI(title="RAG Chatbot API", version="0.4.0", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -129,6 +129,20 @@ def health() -> HealthResponse:
                           qdrant=True, collection=vs.COLL, points=points)
 
 
+@app.get("/papers", response_model=list[Paper], tags=["rag"])
+def papers() -> list[Paper]:
+    """The indexed papers (from data/raw/catalog.json), for the UI's paper filter."""
+    try:
+        data = json.loads((settings.raw_dir / "catalog.json").read_text())
+    except (FileNotFoundError, json.JSONDecodeError):
+        return []
+    return sorted(
+        (Paper(arxiv_id=pid, title=m.get("title", pid), published=m.get("published"),
+               url=f"https://arxiv.org/abs/{pid}") for pid, m in data.items()),
+        key=lambda p: p.title.lower(),
+    )
+
+
 @app.post("/search", response_model=SearchResponse, tags=["rag"])
 def search(req: ChatRequest) -> SearchResponse:
     """Retrieved chunks only, no LLM call. Useful for debugging retrieval."""
@@ -170,7 +184,8 @@ def chat_stream(req: ChatRequest) -> StreamingResponse:
     chunks = state.get("chunks", [])
 
     def events() -> Iterator[str]:
-        yield sse("sources", [s.model_dump() for s in to_sources(chunks)])
+        # passage text included so the UI can show what each citation says
+        yield sse("sources", [s.model_dump() for s in to_sources(chunks, include_text=True)])
         if "answer" in state:                       # the graph abstained: nothing to generate
             yield sse("token", state["answer"])
         else:

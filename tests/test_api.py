@@ -252,3 +252,26 @@ def test_stream_generator_gets_the_interpreted_question(client, monkeypatch):
     monkeypatch.setattr(api, "generate_stream", capture)
     client.post("/chat/stream", json={"question": "How does it work?", "history": HISTORY})
     assert seen["q"] == "How does it work?\n(Interpreted as: How does RAG-Token work?)"
+
+
+# ---------------------------------------------------------------- Phase 4 additions
+
+def test_papers_lists_the_catalog_sorted_by_title(client, monkeypatch, tmp_path):
+    (tmp_path / "catalog.json").write_text(
+        '{"2310.11511": {"title": "Self-RAG", "published": "2023-10-17"},'
+        ' "2005.11401": {"title": "Retrieval-Augmented Generation"}}')
+    monkeypatch.setattr(api.settings, "raw_dir", tmp_path)
+    body = client.get("/papers").json()
+    assert [p["arxiv_id"] for p in body] == ["2005.11401", "2310.11511"]
+    assert body[0]["url"] == "https://arxiv.org/abs/2005.11401"
+
+
+def test_papers_is_empty_without_a_catalog(client, monkeypatch, tmp_path):
+    monkeypatch.setattr(api.settings, "raw_dir", tmp_path)
+    assert client.get("/papers").json() == []
+
+
+def test_stream_sources_include_passage_text(client):
+    events = parse_sse(client.post("/chat/stream", json={"question": "What is RAG-Token?"}).text)
+    assert events[0][0] == "sources"
+    assert events[0][1][0]["text"] == CHUNK.text     # the UI shows it when a citation is clicked

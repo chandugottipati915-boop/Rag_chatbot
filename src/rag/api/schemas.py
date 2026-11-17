@@ -60,6 +60,13 @@ class SearchResponse(BaseModel):
     sources: list[Source]
 
 
+class Paper(BaseModel):
+    arxiv_id: str
+    title: str
+    published: str | None = None
+    url: str
+
+
 class HealthResponse(BaseModel):
     status: Literal["ok", "degraded"]
     qdrant: bool
