@@ -6,12 +6,23 @@ from pydantic import BaseModel, Field
 from rag.retrieval import RetrievedChunk
 
 
+class Message(BaseModel):
+    """One earlier turn of the conversation."""
+    role: Literal["user", "assistant"]
+    content: str = Field(min_length=1, max_length=8000)
+
+
 class ChatRequest(BaseModel):
     question: str = Field(min_length=1, max_length=2000,
                           examples=["How does Self-RAG decide when to retrieve?"])
     top_k: int = Field(default=5, ge=1, le=20)
     arxiv_id: str | None = Field(default=None, description="Only search this paper",
                                  examples=[None])
+    history: list[Message] = Field(
+        default_factory=list, max_length=20,
+        description="Earlier turns, oldest first. Lets follow-ups like 'How is it trained?' work.",
+        examples=[[]],
+    )
 
 
 class Source(BaseModel):
@@ -40,6 +51,8 @@ class ChatResponse(BaseModel):
     answer: str
     sources: list[Source]
     latency_ms: int
+    rewritten_query: str | None = None   # set when a follow-up was rewritten or a retry reformulated it
+    retries: int = 0                     # reformulate-and-search attempts used
 
 
 class SearchResponse(BaseModel):

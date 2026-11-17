@@ -9,6 +9,8 @@ class RAGState(TypedDict, total=False):
     # input
     question: str                # the user's latest message, as typed
     history: list[dict]          # earlier turns: [{"role": "user"|"assistant", "content": "..."}]
+    top_k: int                   # optional: chunks to retrieve (default: settings.top_k)
+    arxiv_id: str | None         # optional: user-chosen paper; unlike paper_filter, never dropped
 
     # filled in by nodes
     query: str                   # standalone search query (from rewrite)

@@ -59,6 +59,17 @@ uv run uvicorn rag.api.main:app --app-dir src --reload     # interactive docs: h
 | POST | `/chat/stream` | Streamed answer via Server-Sent Events: `sources` → `token`… → `done` |
 | POST / GET | `/ingest` | Start background ingestion / check its status |
 
+`/chat` and `/chat/stream` run the LangGraph pipeline (rewrite → retrieve → grade → reformulate once → generate or abstain).
+Send earlier turns in `history` so follow-ups work; responses include `rewritten_query` and `retries`:
+
+```bash
+curl -s -X POST localhost:8000/chat -H "Content-Type: application/json" -d '{
+  "question": "How is it trained?",
+  "history": [{"role": "user", "content": "What is Self-RAG?"},
+              {"role": "assistant", "content": "Self-RAG trains a model to decide when to retrieve..."}]
+}' | python -m json.tool
+```
+
 Errors: `422` invalid input · `502` LLM provider failed · `503` vector store unavailable · `409` ingestion already running.
 
 ```bash

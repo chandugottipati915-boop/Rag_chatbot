@@ -95,22 +95,29 @@ def rewrite(state: RAGState) -> dict:
 
 def retrieve(state: RAGState) -> dict:
     """Hybrid + rerank retrieval (per settings) with the standalone query."""
-    query, paper = state["query"], state.get("paper_filter")
-    chunks = do_retrieve(query, top_k=settings.top_k, arxiv_id=paper)
-    if paper and not chunks:
-        # a wrong paper filter would hide the answer: retry across all papers
+    query = state["query"]
+    top_k = state.get("top_k") or settings.top_k
+    forced = state.get("arxiv_id")                      # chosen by the user: always respected
+    paper = forced or state.get("paper_filter")         # chosen by the rewrite: a best guess
+    chunks = do_retrieve(query, top_k=top_k, arxiv_id=paper)
+    if paper and not forced and not chunks:
+        # a wrong guessed filter would hide the answer: retry across all papers
         log.info("No chunks in paper %s; retrying without the filter", paper)
-        chunks = do_retrieve(query, top_k=settings.top_k)
+        chunks = do_retrieve(query, top_k=top_k)
     return {"chunks": chunks}
 
 
-def generate(state: RAGState) -> dict:
-    """Answer the user's own question; mention how it was interpreted if it was rewritten."""
+def answer_question(state: RAGState) -> str:
+    """The question the generator answers: the user's own words, plus how they were
+    interpreted when rewritten (the generator doesn't see the chat history).
+    Shared by the generate node and the streaming API."""
     question, query = state["question"], state.get("query", state["question"])
-    if query != question:
-        # the generator doesn't see the history, so tell it what "it" referred to
-        question = f"{question}\n(Interpreted as: {query})"
-    return {"answer": llm_generate(question, state.get("chunks", []))}
+    return question if query == question else f"{question}\n(Interpreted as: {query})"
+
+
+def generate(state: RAGState) -> dict:
+    """Answer the user's own question from the graded chunks."""
+    return {"answer": llm_generate(answer_question(state), state.get("chunks", []))}
 
 
 def grade(state: RAGState) -> dict:

@@ -24,7 +24,9 @@ from rag.api.schemas import (
     IngestStatus, SearchResponse, Source,
 )
 from rag.embeddings import get_embedder
-from rag.generation import generate, generate_stream
+from rag.generation import generate_stream
+from rag.graph.build import get_graph, get_retrieval_graph
+from rag.graph.nodes import answer_question
 from rag.retrieval import RetrievedChunk, retrieve
 
 log = logging.getLogger("rag.api")
@@ -43,7 +45,7 @@ async def lifespan(app: FastAPI):
     yield
 
 
-app = FastAPI(title="RAG Chatbot API", version="0.2.0", lifespan=lifespan)
+app = FastAPI(title="RAG Chatbot API", version="0.3.0", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -71,6 +73,38 @@ def to_sources(chunks: list[RetrievedChunk], include_text: bool = False) -> list
 def sse(event: str, data) -> str:
     """Format one Server-Sent Event. JSON-encode data so newlines in tokens don't break it."""
     return f"event: {event}\ndata: {json.dumps(data)}\n\n"
+
+
+def graph_input(req: ChatRequest) -> dict:
+    return {
+        "question": req.question,
+        "history": [m.model_dump() for m in req.history],
+        "top_k": req.top_k,
+        "arxiv_id": req.arxiv_id,
+    }
+
+
+def run_graph(graph, req: ChatRequest) -> dict:
+    """Run a compiled graph with consistent errors.
+
+    Rewrite, grade and reformulate already fall back on their own when the LLM fails,
+    so an OpenAIError reaching here comes from generation (502). Anything else is
+    retrieval: Qdrant, the embedder or the reranker (503).
+    """
+    try:
+        return graph.invoke(graph_input(req))
+    except OpenAIError as e:
+        log.exception("LLM call failed")
+        raise HTTPException(status_code=502, detail="LLM provider error") from e
+    except Exception as e:
+        log.exception("Graph failed (retrieval)")
+        raise HTTPException(status_code=503, detail="Search backend unavailable") from e
+
+
+def graph_info(req: ChatRequest, state: dict) -> dict:
+    query = state.get("query")
+    return {"rewritten_query": query if query and query != req.question else None,
+            "retries": state.get("retries", 0)}
 
 
 # ------------------------------------------------------------------ routes
@@ -104,19 +138,19 @@ def search(req: ChatRequest) -> SearchResponse:
 
 @app.post("/chat", response_model=ChatResponse, tags=["rag"])
 def chat(req: ChatRequest) -> ChatResponse:
-    """Full cited answer in one JSON response."""
+    """Full cited answer in one JSON response.
+
+    Runs the graph: rewrite (with history) → retrieve → grade → (reformulate once)
+    → generate, or abstain when nothing relevant is found.
+    """
     t0 = time.perf_counter()
-    chunks = get_chunks(req)
-    try:
-        text = generate(req.question, chunks)
-    except OpenAIError as e:
-        log.exception("LLM call failed")
-        raise HTTPException(status_code=502, detail="LLM provider error") from e
+    state = run_graph(get_graph(), req)
     return ChatResponse(
         question=req.question,
-        answer=text,
-        sources=to_sources(chunks),
+        answer=state["answer"],
+        sources=to_sources(state.get("chunks", [])),
         latency_ms=int((time.perf_counter() - t0) * 1000),
+        **graph_info(req, state),
     )
 
 
@@ -124,25 +158,32 @@ def chat(req: ChatRequest) -> ChatResponse:
 def chat_stream(req: ChatRequest) -> StreamingResponse:
     """Streamed answer as Server-Sent Events, in this order:
 
-    - `sources`: list of sources (sent first so a UI can show them right away)
+    - `sources`: graded sources (sent first so a UI can show them right away; empty if abstaining)
     - `token`:   a piece of answer text (many of these)
-    - `done`:    {"latency_ms": ...}
+    - `done`:    {"latency_ms", "rewritten_query", "retries"}
     - `error`:   {"message": ...} if the LLM fails mid-stream
     """
-    chunks = get_chunks(req)   # retrieval errors still return a normal 503, before streaming starts
+    t0 = time.perf_counter()
+    # rewrite → retrieve → grade (→ reformulate) runs before streaming starts,
+    # so retrieval errors still return a normal 503
+    state = run_graph(get_retrieval_graph(), req)
+    chunks = state.get("chunks", [])
 
     def events() -> Iterator[str]:
-        t0 = time.perf_counter()
         yield sse("sources", [s.model_dump() for s in to_sources(chunks)])
-        try:
-            for piece in generate_stream(req.question, chunks):
-                yield sse("token", piece)
-        except OpenAIError:
-            # the 200 status is already sent, so report the failure as an event
-            log.exception("LLM stream failed")
-            yield sse("error", {"message": "LLM provider error"})
-            return
-        yield sse("done", {"latency_ms": int((time.perf_counter() - t0) * 1000)})
+        if "answer" in state:                       # the graph abstained: nothing to generate
+            yield sse("token", state["answer"])
+        else:
+            try:
+                for piece in generate_stream(answer_question(state), chunks):
+                    yield sse("token", piece)
+            except OpenAIError:
+                # the 200 status is already sent, so report the failure as an event
+                log.exception("LLM stream failed")
+                yield sse("error", {"message": "LLM provider error"})
+                return
+        yield sse("done", {"latency_ms": int((time.perf_counter() - t0) * 1000),
+                           **graph_info(req, state)})
 
     return StreamingResponse(
         events(),
