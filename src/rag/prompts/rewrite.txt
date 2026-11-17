@@ -10,8 +10,12 @@ Recent conversation:
 Latest question: {question}
 
 Rules:
-1. Replace pronouns and vague references ("it", "that paper", "the second one") with the
-   actual names from the conversation.
+1. Replace pronouns and vague references ("it", "its", "that paper", "the second one",
+   "the first one") with the actual names from the conversation.
+   - When several subjects appear, "it" means the MOST RECENT one: after "What is
+     Self-RAG?" and then "What is CRAG?", "Does it use web search?" is about CRAG.
+   - Replace "they" / "the authors" with the paper or method name, and "the two" /
+     "both" with both names.
 2. Keep the meaning. Do not answer the question and do not add new information.
 3. If the latest question is already standalone, or changes topic, return it unchanged
    apart from fixing references.

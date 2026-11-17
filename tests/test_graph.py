@@ -107,7 +107,8 @@ def test_retry_finds_relevant_chunks_and_generates(fake):
     assert fake.generated_with is not None and len(fake.generated_with[1]) == 1
 
 
-def test_retry_drops_the_paper_filter(fake):
+def test_retry_drops_the_paper_filter(fake, monkeypatch):
+    monkeypatch.setattr(nodes.settings, "rewrite_paper_filter", True)
     fake.use_llm({"query": "How is Self-RAG trained?", "paper": "2310.11511"},   # rewrite
                  {"relevant": []},                                              # grade #1
                  {"query": "Self-RAG training procedure"},                      # reformulate
@@ -167,7 +168,8 @@ HISTORY = [{"role": "user", "content": "What is Self-RAG?"},
            {"role": "assistant", "content": "Self-RAG is ..."}]
 
 
-def test_follow_up_is_rewritten_and_grader_uses_the_rewritten_query(fake):
+def test_follow_up_is_rewritten_and_grader_uses_the_rewritten_query(fake, monkeypatch):
+    monkeypatch.setattr(nodes.settings, "rewrite_paper_filter", True)
     llm = fake.use_llm({"query": "How is Self-RAG trained?", "paper": "2310.11511"},   # rewrite
                        {"relevant": [1]})                                              # grade
     out = run("How is it trained?", HISTORY)
@@ -177,7 +179,8 @@ def test_follow_up_is_rewritten_and_grader_uses_the_rewritten_query(fake):
     assert "(Interpreted as: How is Self-RAG trained?)" in fake.generated_with[0]
 
 
-def test_invented_paper_id_is_ignored(fake):
+def test_invented_paper_id_is_ignored(fake, monkeypatch):
+    monkeypatch.setattr(nodes.settings, "rewrite_paper_filter", True)
     fake.use_llm({"query": "How is Self-RAG trained?", "paper": "9999.99999"}, {"relevant": [1]})
     out = run("How is it trained?", HISTORY)
     assert out["paper_filter"] is None
@@ -188,3 +191,12 @@ def test_graph_shape():
     for edge in ("retrieve --> grade", "grade -.-> generate", "grade -.-> abstain",
                  "grade -.-> reformulate", "reformulate --> retrieve"):
         assert edge in mermaid, edge
+
+
+def test_paper_filter_is_off_by_default(fake):
+    fake.use_llm({"query": "How is Self-RAG trained?", "paper": "2310.11511"}, {"relevant": [1]})
+    out = run("How is it trained?", HISTORY)
+    assert out["query"] == "How is Self-RAG trained?"      # the rewrite still works
+    assert out["paper_filter"] is None                     # but no paper restriction
+    assert fake.retrieve_calls[0] == ("How is Self-RAG trained?", None)
+

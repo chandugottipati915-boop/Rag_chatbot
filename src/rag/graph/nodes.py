@@ -89,6 +89,8 @@ def rewrite(state: RAGState) -> dict:
 
     query = out.query.strip() or question
     paper = out.paper if out.paper in papers else None    # ignore invented ids
+    if not settings.rewrite_paper_filter:
+        paper = None                                       # filter disabled (see config)
     log.info("rewrite: %r -> %r (paper=%s)", question, query, paper)
     return {"query": query, "paper_filter": paper}
 

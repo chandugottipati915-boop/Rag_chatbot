@@ -38,6 +38,9 @@ class Settings(BaseSettings):
 
     # graph
     max_retries: int = 1                                   # reformulate-and-search attempts before abstaining
+    # Let the rewrite restrict retrieval to one paper. Off by default: in the multi-turn eval
+    # a wrong guess hid the answer (m08, m12) and hybrid + rerank found the right paper anyway.
+    rewrite_paper_filter: bool = False
 
     @property
     def collection_name(self) -> str:

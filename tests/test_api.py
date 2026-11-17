@@ -203,7 +203,8 @@ def test_chat_without_history_skips_rewrite(client, llm, retrieved):
     assert retrieved[0] == {"query": "What is RAG-Token?", "top_k": 3, "arxiv_id": None}
 
 
-def test_chat_with_history_rewrites_the_follow_up(client, llm, retrieved):
+def test_chat_with_history_rewrites_the_follow_up(client, llm, retrieved, monkeypatch):
+    monkeypatch.setattr(nodes.settings, "rewrite_paper_filter", True)
     body = client.post("/chat", json={"question": "How does it work?", "history": HISTORY}).json()
     assert llm.calls[0] == "rewrite"
     assert body["rewritten_query"] == "How does RAG-Token work?"

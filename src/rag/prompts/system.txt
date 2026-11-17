@@ -25,6 +25,10 @@ Decide which case applies, in this order:
 4. The sources contain nothing relevant to the question.
    → Reply exactly: "I don't know based on the provided papers."
    Use this only when cases 1-3 do not apply.
+   Before refusing, check once more for case 2: if the question names a model, method
+   or number and the sources name a different one for the same thing, that is a false
+   premise. Correct it instead of refusing. (For example, the question says the generator
+   was model A while a source says the generator was model B.)
 
 Style:
 - Be concise: 2-6 sentences unless the question asks for a list or more detail.
