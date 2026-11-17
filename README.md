@@ -2,36 +2,112 @@
 
 Ask questions about 15 landmark papers (Transformers, BERT, DPR, ColBERT, RAG, Self-RAG,
 CRAG, GraphRAG, RAGAS, …) and get answers with citations to the paper, section and page.
+Follow-up questions work: the conversation is taken into account.
 
-**Status:** Phase 2 — evaluated RAG pipeline served by a streaming FastAPI backend.
+**Status:** Phase 3. Hybrid retrieval with reranking, orchestrated as a LangGraph pipeline
+(query rewriting, relevance grading, one retry), served by a streaming FastAPI backend and
+measured with three evaluation sets.
 
 ## How it works
 
+**Indexing**
+
 ```
-PDFs ──► unstructured (partition + chunk by section) ──► BGE-small embeddings ──► Qdrant
-                                                                                    │
-question ──► embed ──► top-k chunks ──► prompt with numbered sources ──► gpt-4o-mini ──► cited answer
+PDFs ──► unstructured (partition + chunk by section) ──► OpenAI embeddings ──┐
+                                                          BM25 (in Qdrant) ──┴──► Qdrant
 ```
 
-- **Parsing & chunking:** `unstructured` (`partition_pdf`, `chunk_by_title`), grouped by paper section;
-  the References section, page headers and arXiv stamps are dropped.
-- **Metadata on every chunk:** arXiv id, title, section, page range, document hash.
-- **Idempotent ingestion:** unchanged PDFs are skipped (content hash); changed ones are replaced.
-- **Grounded answers:** the model answers only from retrieved sources, cites them as `[n]`,
-  and says "I don't know" when the papers don't cover the question.
+**Answering a question** (LangGraph)
+
+```
+question + history
+   │
+   ▼
+rewrite ──► retrieve ──► grade ──┬── relevant chunks ─────────────► generate ──► cited answer
+              ▲                  ├── nothing relevant, retry left ─► reformulate ─┐
+              └──────────────────┼────────────────────────────────────────────────┘
+                                 └── nothing relevant, no retry ───► abstain ───► "I don't know…"
+```
+
+| Step | What it does | Why |
+|---|---|---|
+| **rewrite** | Turns a follow-up ("How is it trained?") into a standalone query ("How is Self-RAG trained?") using the last turns. No LLM call when there is no history. | Retrieval only sees one message; without this, follow-ups retrieve the wrong papers. |
+| **retrieve** | Hybrid search (dense + BM25, fused with RRF), 20 candidates reranked by a cross-encoder to the top 5. | Dense search misses rare terms (CRAG, MaxSim); the reranker fixes the ordering. |
+| **grade** | One LLM call keeps only the chunks that actually help answer the question. | Stops wrong-paper chunks (e.g. CRAG's appendix mentioning Self-RAG) from reaching the answer. |
+| **reformulate** | If nothing is relevant, writes one different search query and retrieves again (max 1 retry). | Gives missed questions a second chance at bounded cost. |
+| **generate / abstain** | Answers from the graded chunks with `[n]` citations, corrects false premises, or refuses without an LLM call. | Grounded answers; honest refusals when the papers don't cover the question. |
+
+Every LLM step falls back safely: a failed rewrite uses the original question, a failed
+grade keeps all chunks, a failed reformulation retries with the original question.
+
+## Results
+
+Three golden sets: **retrieval** (33 questions), **generator** (43 questions incl. false premises
+and unanswerable ones) and **multi-turn** (14 conversations). Judge: `gpt-4o-mini` via DeepEval.
+
+**Retrieval** (30 answerable questions)
+
+| Setup | Contextual precision | Contextual recall | Retrieval p50 |
+|---|---|---|---|
+| Baseline: BGE dense | 0.708 | 0.956 | — |
+| OpenAI hybrid (dense + BM25) | 0.838 | 0.936 | — |
+| **OpenAI hybrid + reranker** | **0.881** | **0.969** | 1.3 s |
+
+**Generator** (33 questions that should be answered)
+
+| Setup | Faithfulness | Answer relevancy | Correct behavior | False refusals |
+|---|---|---|---|---|
+| Baseline (first prompt) | 0.899 | 0.843 | — | 5 |
+| Hybrid + rerank, new prompt | 0.902 | 0.966 | 0.715 | 1 |
+| **Full graph** | TBD | TBD | TBD | TBD |
+
+Unanswerable questions are refused 4/4 in every setup since the prompt fix.
+
+**Multi-turn** (14 conversations; the same follow-up sent with and without the earlier turns)
+
+| | Paper hit | Recall | Correct behavior | Rewrite quality |
+|---|---|---|---|---|
+| Without history | 0.62 | 0.54 | 0.54 | — |
+| **With history (rewriting)** | **1.00** | **0.96** | **0.82** | 0.90 |
+
+**Latency** (full graph on a laptop)
+
+| Questions | p50 | p95 |
+|---|---|---|
+| Paper questions | TBD | TBD |
+| Off-topic (grade → retry → abstain) | TBD | TBD |
+
+**Known limitations**
+- False premises in single questions are corrected only 1 in 4 times (`gpt-4o-mini` tends to refuse).
+- Ambiguous questions ("How is the relevance score computed?") are not clarified.
+- Comparisons sometimes retrieve only one side (DPR vs ColBERT).
+- One detail-level miss (RAG's "21 million documents") in every setup.
+
+Details and per-question notes: [`eval/phase3_comparison.md`](eval/phase3_comparison.md),
+[`eval/retrieval_eval_notes.md`](eval/retrieval_eval_notes.md),
+[`eval/generator_eval_notes.md`](eval/generator_eval_notes.md).
+
+### Design decisions backed by the evals
+- **Hybrid + reranker as default:** best precision and recall of all setups, for ~1.3 s per query.
+- **No paper filter from the rewrite:** it looked useful, but in the multi-turn eval a wrong guess
+  hid the answer twice and hybrid + rerank found the right paper without it in every case.
+  It's still available behind `REWRITE_PAPER_FILTER=true`.
+- **One retry, not more:** enough to recover missed questions; each retry adds an LLM call and
+  a search, which off-topic questions pay for before being refused.
 
 ## Stack
 
-Python 3.12 · uv · unstructured · sentence-transformers (`BAAI/bge-small-en-v1.5`) · Qdrant ·
-OpenAI (`gpt-4o-mini`) · DeepEval (LLM-as-judge evaluation)
+Python 3.12 · uv · unstructured · OpenAI (`text-embedding-3-small`, `gpt-4o-mini`) · Qdrant
+(dense + BM25, RRF) · sentence-transformers cross-encoder (`BAAI/bge-reranker-base`) ·
+LangGraph · FastAPI · DeepEval · pytest
 
 ## Setup
 
 ```bash
 git clone <repo-url> && cd rag-chatbot
 uv sync
-cp .env.example .env                      # add your OPENAI_API_KEY
-docker run -d -p 6333:6333 -v qdrant_data:/qdrant/storage --name qdrant qdrant/qdrant
+cp .env.example .env                      # add OPENAI_API_KEY; set RETRIEVAL_MODE=hybrid, RERANK=true
+docker run -d -p 6333:6333 -v qdrant_data:/qdrant/storage --name qdrant qdrant/qdrant   # Qdrant >= 1.15.3
 
 uv run python scripts/download_papers.py  # 15 PDFs from arXiv → data/raw/
 uv run python scripts/ingest.py           # chunk, embed, load into Qdrant (--force to rebuild)
@@ -40,8 +116,9 @@ uv run python scripts/ingest.py           # chunk, embed, load into Qdrant (--fo
 ## Usage
 
 ```bash
+uv run python scripts/try_graph.py                    # run the full graph: a question, a follow-up, edge cases
+uv run python scripts/try_graph.py --diagram          # print the graph as Mermaid
 uv run python scripts/try_retrieval.py "What is late interaction in ColBERT?"   # inspect retrieved chunks
-uv run python scripts/ask.py "How does Self-RAG decide when to retrieve?"        # cited answer
 uv run python scripts/inspect_chunks.py 2005.11401.pdf                          # check chunking for one paper
 ```
 
@@ -55,11 +132,10 @@ uv run uvicorn rag.api.main:app --app-dir src --reload     # interactive docs: h
 |---|---|---|
 | GET | `/health` | Qdrant reachable + number of indexed chunks (`ok` / `degraded`) |
 | POST | `/search` | Retrieved chunks only, no LLM call |
-| POST | `/chat` | Full cited answer as JSON |
+| POST | `/chat` | Full cited answer as JSON (runs the graph) |
 | POST | `/chat/stream` | Streamed answer via Server-Sent Events: `sources` → `token`… → `done` |
 | POST / GET | `/ingest` | Start background ingestion / check its status |
 
-`/chat` and `/chat/stream` run the LangGraph pipeline (rewrite → retrieve → grade → reformulate once → generate or abstain).
 Send earlier turns in `history` so follow-ups work; responses include `rewritten_query` and `retries`:
 
 ```bash
@@ -72,63 +148,50 @@ curl -s -X POST localhost:8000/chat -H "Content-Type: application/json" -d '{
 
 Errors: `422` invalid input · `502` LLM provider failed · `503` vector store unavailable · `409` ingestion already running.
 
-```bash
-curl -N -X POST localhost:8000/chat/stream -H "Content-Type: application/json" \
-     -d '{"question": "How does Self-RAG decide when to retrieve?"}'
-```
-
-Tests (retrieval, LLM and ingestion faked; no services needed): `uv run pytest -q`
-
-## Evaluation
-
-Golden set: `goldens/retrieval_golden.jsonl` — 33 questions (26 single-paper, 4 multi-paper,
-3 unanswerable), each with relevant papers, a reference answer and the key facts a complete
-answer needs.
+## Testing and evaluation
 
 ```bash
-uv run python eval/eval_retriever.py      # DeepEval contextual precision & recall, judge: gpt-4o-mini
+uv run pytest -q                                   # 40 tests: API + graph, all external services faked
+uv run python eval/eval_retriever.py               # contextual precision & recall
+uv run python eval/eval_generator.py               # faithfulness, relevancy, correct behavior (through the graph)
+uv run python eval/eval_multiturn.py               # follow-ups, with vs without history
+uv run python scripts/bench_latency.py --graph     # full-graph latency
+bash scripts/run_eval.sh hybrid+rerank             # ingest + latency + retrieval & generator evals for a setup
 ```
-
-**Baseline retriever** (dense only, BGE-small, top-k = 5, 30 answerable questions):
-
-| Metric | Score | Passed (≥ 0.7) |
-|---|---|---|
-| Contextual recall | **0.956** | 28 / 30 |
-| Contextual precision | **0.708** | 19 / 30 |
-
-Recall is strong: the needed facts are almost always somewhere in the top 5. Precision is
-the weak spot: relevant chunks are often ranked below irrelevant ones (e.g. CRAG and HyDE
-questions). Hybrid search and reranking (Phase 3) target exactly this. Full per-question
-results: [`eval/notes.md`](eval/notes.md).
 
 ## Project structure
 
 ```
 src/rag/
-  config.py            settings from .env
-  embeddings.py        local (BGE) or OpenAI embeddings
-  vectorstore.py       Qdrant: collection, upsert, search
+  config.py            settings from .env (retrieval mode, reranker, retries, ...)
+  embeddings.py        OpenAI or local (BGE) embeddings
+  vectorstore.py       Qdrant: dense or hybrid (dense + BM25) collections and search
+  rerank.py            cross-encoder reranker
   retrieval.py         question → ranked chunks with citations
-  generation.py        prompt + LLM → cited answer
-  prompts/answers.txt  answer prompt
+  generation.py        prompts + LLM → cited answer (also streaming)
+  prompts/             system rules, answer template, rewrite, grade, reformulate
+  graph/
+    state.py           shared graph state
+    nodes.py           rewrite, retrieve, grade, reformulate, generate, abstain
+    build.py           graph wiring (full graph + retrieval-only graph for streaming)
   api/
     main.py            FastAPI routes
     schemas.py         request / response models
   ingestion/
     chunker.py         PDF → section-aware chunks + metadata
     pipeline.py        PDFs → chunks → vectors → Qdrant
-scripts/               download, ingest checks, retrieval and ask scripts
-eval/                  evaluation script + baseline notes
-tests/                 API tests
-goldens/               golden question set
+scripts/               download, ingest, try the graph, retrieval checks, latency, eval runner
+eval/                  three eval scripts + notes and comparison tables
+goldens/               retrieval, generator and multi-turn golden sets
+tests/                 API and graph tests
 ```
 
 ## Roadmap
 
-- [x] **Phase 1** — ingestion, retrieval, cited generation, evaluated baseline
-- [x] **Phase 2** — FastAPI backend with streaming answers
-- [ ] **Phase 3** — LangGraph orchestration, hybrid search (dense + BM25), reranking, query rewriting
-- [ ] **Phase 4** — Next.js chat UI, chat history (Postgres), auth, tracing (Langfuse)
-- [ ] **Phase 5** — Docker Compose, CI with eval gates, guardrails, cloud deployment
+- [x] **Phase 1**: ingestion, retrieval, cited generation, evaluated baseline
+- [x] **Phase 2**: FastAPI backend with streaming answers
+- [x] **Phase 3**: hybrid search + reranking, LangGraph (rewrite, grade, retry), multi-turn chat, three eval sets
+- [ ] **Phase 4**: Next.js chat UI, chat history (Postgres), auth, tracing (Langfuse)
+- [ ] **Phase 5**: Docker Compose, CI with eval gates, guardrails, cloud deployment
 
 > Answers come from the papers in `data/raw` only and may be incomplete. Not a substitute for reading the papers.

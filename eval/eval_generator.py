@@ -12,8 +12,11 @@ from deepeval import evaluate
 from deepeval.metrics import AnswerRelevancyMetric, FaithfulnessMetric, GEval
 from deepeval.test_case import LLMTestCase, SingleTurnParams
 
+import argparse
+
 from rag.config import PROJECT_ROOT
 from rag.generation import NO_ANSWER, generate
+from rag.graph.build import get_graph
 from rag.retrieval import retrieve
 
 THRESHOLD = 0.7
@@ -23,6 +26,26 @@ GOLDEN = PROJECT_ROOT / "goldens" / "generator_golden.jsonl"
 OUT_DIR = PROJECT_ROOT / "eval" / "results"
 
 golden = [json.loads(line) for line in GOLDEN.read_text().splitlines() if line.strip()]
+
+# graph (default): the same pipeline as the API: rewrite → retrieve → grade → retry → generate/abstain
+# direct:          the older pipeline: retrieve → generate, kept for comparison with earlier runs
+ap = argparse.ArgumentParser()
+ap.add_argument("--pipeline", choices=["graph", "direct"], default="graph")
+PIPELINE = ap.parse_args().pipeline
+
+
+def run_pipeline(question: str) -> tuple[str, list, dict]:
+    """Return (answer, chunks the answer was based on, extra info)."""
+    if PIPELINE == "direct":
+        chunks = retrieve(question, top_k=TOP_K)
+        return generate(question, chunks), chunks, {}
+    state = get_graph().invoke({"question": question})
+    chunks = state.get("chunks", [])
+    # when the graph abstains, no chunks survive grading: judge the refusal against what was
+    # retrieved, so Faithfulness still has context (a refusal makes no claims anyway)
+    context = chunks or state.get("retrieved", [])
+    return state["answer"], context, {"retries": state.get("retries", 0), "kept": len(chunks),
+                                      "retrieved": len(state.get("retrieved", []))}
 
 # What the judge should expect, per `expected_behavior` in the golden set
 BEHAVIOR_SPEC = {
@@ -39,12 +62,12 @@ BEHAVIOR_SPEC = {
                         "meaning is wrong.",
 }
 
-# ---- 1. run the real pipeline: retrieve → generate
+# ---- 1. run the pipeline
+print(f"Pipeline: {PIPELINE}")
 test_cases, records = [], []
 for i, item in enumerate(golden, 1):
     print(f"[{i}/{len(golden)}] {item['id']} {item['question'][:60]}")
-    chunks = retrieve(item["question"], top_k=TOP_K)
-    answer = generate(item["question"], chunks)
+    answer, chunks, info = run_pipeline(item["question"])
 
     test_cases.append(
         LLMTestCase(
@@ -53,7 +76,7 @@ for i, item in enumerate(golden, 1):
             # read by the behavior metric (GEval); Faithfulness and Answer Relevancy ignore it
             expected_output=(f"Expected behavior: {BEHAVIOR_SPEC[item['expected_behavior']]}\n"
                              f"Reference answer: {item['reference_answer']}"),
-            retrieval_context=[c.text for c in chunks],         # what Faithfulness checks claims against
+            retrieval_context=[c.text for c in chunks] or ["(no sources retrieved)"],  # Faithfulness context
             additional_metadata={
                 "id": item["id"],
                 "category": item["category"],
@@ -66,11 +89,12 @@ for i, item in enumerate(golden, 1):
         "expected_behavior": item["expected_behavior"],
         "question": item["question"], "answer": answer,
         "sources": [c.citation for c in chunks],
+        "pipeline": PIPELINE, **info,
     })
 
 # save the generated answers: they cost money, and you'll want to read them
 OUT_DIR.mkdir(parents=True, exist_ok=True)
-answers_file = OUT_DIR / f"generator_answers_{datetime.now():%Y%m%d-%H%M%S}.jsonl"
+answers_file = OUT_DIR / f"generator_answers_{PIPELINE}_{datetime.now():%Y%m%d-%H%M%S}.jsonl"
 answers_file.write_text("\n".join(json.dumps(r) for r in records) + "\n")
 print(f"\nSaved answers → {answers_file}")
 
@@ -109,7 +133,7 @@ for tr in result.test_results:
     for md in tr.metrics_data or []:
         scores[behavior][md.name].append(md.score or 0.0)
 
-print("\n=== Generator eval (judge: %s, k=%d) ===" % (JUDGE_MODEL, TOP_K))
+print("\n=== Generator eval (pipeline: %s, judge: %s, k=%d) ===" % (PIPELINE, JUDGE_MODEL, TOP_K))
 for behavior in ("answer", "correct_premise", "abstain", "clarify_or_cover"):
     if behavior not in scores:
         continue
@@ -125,3 +149,6 @@ missed_abstains = [r["id"] for r in records
                    if r["expected_behavior"] == "abstain" and r["answer"].strip() != NO_ANSWER]
 print(f"\nFalse refusals on answerable questions: {len(false_refusals)}  {false_refusals}")
 print(f"Unanswerable questions NOT refused:     {len(missed_abstains)}  {missed_abstains}")
+if PIPELINE == "graph":
+    retried = [r["id"] for r in records if r.get("retries")]
+    print(f"Questions that needed a retry:          {len(retried)}  {retried}")

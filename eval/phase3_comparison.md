@@ -60,3 +60,50 @@ survey section fix applied (re-ingested). Logs: `eval/results/hybrid_run_2026111
 Reranking gives the best retrieval of every setup: precision +0.04 and recall +0.03 over hybrid,
 and both targets are met (precision ≥ 0.85, recall ≥ 0.95). Cost: ~1.3 s per query for
 retrieval (OpenAI query embedding + cross-encoder over 20 chunks on the laptop).
+
+## Part C: LangGraph pipeline + multi-turn (2026-11-17)
+
+Graph: rewrite → retrieve (hybrid + rerank) → grade → reformulate once → generate / abstain.
+New golden set: `goldens/multiturn_golden.jsonl` (14 conversations), script `eval/eval_multiturn.py`.
+
+### Multi-turn, first run (rewrite with paper filter)
+
+| Run | Paper hit | Recall | Refusal ok | Rewrite | Faithful | Behavior |
+|---|---|---|---|---|---|---|
+| with history | 0.85 | 0.81 | 0.71 | 0.85 | 0.83 | 0.62 |
+| no history | 0.62 | 0.54 | 0.93 | — | 0.85 | 0.55 |
+
+Findings: the paper filter caused both wrong-paper failures (m08: RAGAS filtered to CRAG;
+m12: "it" resolved to the older subject, Self-RAG) and was never needed for a success
+(m03/m04/m05/m10 found the right paper without it). m13 (false premise in a follow-up) refused.
+
+Fixes: paper filter off by default (`REWRITE_PAPER_FILTER`), rewrite rules for "most recent
+subject" / "they" / "the two", a premise check before refusing in `system.txt`, and `filter ok`
+now only counts a wrong filter as a failure.
+
+### Multi-turn, after the fixes
+
+| Run | Paper hit | Recall | Refusal ok | Rewrite | Faithful | Behavior |
+|---|---|---|---|---|---|---|
+| **with history** | **1.00** | **0.96** | **1.00** | **0.90** | **0.88** | **0.82** |
+| no history | 0.62 | 0.54 | 0.93 | — | 0.94 | 0.54 |
+
+Rewriting adds +0.38 paper hit and +0.28 correct behavior on follow-ups.
+Remaining: comparisons sometimes retrieve one side only (m06, behavior 0.48).
+
+### Generator eval after the fixes (direct pipeline: retrieve → generate)
+
+| Group | Faithfulness | Relevancy | Correct behavior |
+|---|---|---|---|
+| answer (33) | 0.902 | 0.966 | 0.715 (22/33) |
+| correct_premise (4) | 0.938 | 0.253 | 0.372 (1/4) |
+| abstain (4) | 0.750 | 0.000 | 1.000 (4/4) |
+| clarify_or_cover (2) | 0.700 | 0.944 | 0.184 (0/2) |
+
+No regressions: unanswerable questions still refused 4/4; false refusals 1 (g33).
+The premise check fixed m13 (multi-turn) but not single-question false premises (still 1/4).
+
+### Full graph (TBD: run on the laptop)
+
+- `uv run python eval/eval_generator.py` (now runs through the graph by default)
+- `uv run python scripts/bench_latency.py --graph`
