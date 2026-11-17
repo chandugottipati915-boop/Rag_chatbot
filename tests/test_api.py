@@ -172,10 +172,11 @@ def test_health_degraded_when_qdrant_down(client, monkeypatch):
     def down(*args, **kwargs):
         raise ConnectionError
     monkeypatch.setattr(api.vs.client, "collection_exists", down)
+    monkeypatch.setattr(api, "database_ok", lambda: False)
     r = client.get("/health")
     assert r.status_code == 200
     assert r.json() == {"status": "degraded", "qdrant": False,
-                        "collection": api.vs.COLL, "points": None}
+                        "collection": api.vs.COLL, "points": None, "database": False}
 
 
 # ---------------------------------------------------------------- /ingest

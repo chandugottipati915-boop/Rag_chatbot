@@ -108,7 +108,7 @@ Details and per-question notes: [`eval/phase3_comparison.md`](eval/phase3_compar
 
 Python 3.12 · uv · unstructured · OpenAI (`text-embedding-3-small`, `gpt-4o-mini`) · Qdrant
 (dense + BM25, RRF) · sentence-transformers cross-encoder (`BAAI/bge-reranker-base`) ·
-LangGraph · FastAPI · DeepEval · pytest · Next.js 16 (React 19, TypeScript, Tailwind v4) · Vitest
+LangGraph · FastAPI · Postgres (SQLAlchemy 2, Alembic) · DeepEval · pytest · Next.js 16 (React 19, TypeScript, Tailwind v4) · Vitest
 
 ## Setup
 
@@ -117,6 +117,9 @@ git clone <repo-url> && cd rag-chatbot
 uv sync
 cp .env.example .env                      # add OPENAI_API_KEY; set RETRIEVAL_MODE=hybrid, RERANK=true
 docker run -d -p 6333:6333 -v qdrant_data:/qdrant/storage --name qdrant qdrant/qdrant   # Qdrant >= 1.15.3
+docker run -d -p 5432:5432 -e POSTGRES_USER=rag -e POSTGRES_PASSWORD=rag -e POSTGRES_DB=rag \
+  -v pg_data:/var/lib/postgresql/data --name postgres postgres:17                       # chat history
+uv run alembic upgrade head               # create the chat-history tables
 
 uv run python scripts/download_papers.py  # 15 PDFs from arXiv → data/raw/
 uv run python scripts/ingest.py           # chunk, embed, load into Qdrant (--force to rebuild)
@@ -138,8 +141,8 @@ cd frontend && npm install && npm run dev          # http://localhost:3000 (the 
 ```
 
 A Next.js app that streams answers from `/chat/stream`. Each `[n]` citation is a clickable
-mark that opens the cited passage in a side margin, follow-ups send the conversation history,
-and chats are saved in the browser. Details in [frontend/README.md](frontend/README.md).
+mark that opens the cited passage in a side margin, and chats are saved in Postgres through
+the API, so they survive reloads and other browsers. Details in [frontend/README.md](frontend/README.md).
 
 ## API
 
@@ -149,14 +152,18 @@ uv run uvicorn rag.api.main:app --app-dir src --reload     # interactive docs: h
 
 | Method | Path | What it does |
 |---|---|---|
-| GET | `/health` | Qdrant reachable + number of indexed chunks (`ok` / `degraded`) |
+| GET | `/health` | Qdrant reachable + number of indexed chunks (`ok` / `degraded`), and whether the database is up |
 | GET | `/papers` | The indexed papers (for the UI's paper filter) |
 | POST | `/search` | Retrieved chunks only, no LLM call |
 | POST | `/chat` | Full cited answer as JSON (runs the graph) |
 | POST | `/chat/stream` | Streamed answer via Server-Sent Events: `sources` → `token`… → `done` |
 | POST / GET | `/ingest` | Start background ingestion / check its status |
+| GET / POST | `/conversations` | List saved chats (newest first) / start one |
+| GET / PATCH / DELETE | `/conversations/{id}` | A chat with its messages / rename / delete |
 
-Send earlier turns in `history` so follow-ups work; responses include `rewritten_query` and `retries`:
+For a saved chat, send `conversation_id`: the server loads the history from Postgres and stores
+both turns (a stopped answer is kept, marked `stopped`). Without it, send earlier turns in `history`
+yourself. Responses include `rewritten_query` and `retries`:
 
 ```bash
 curl -s -X POST localhost:8000/chat -H "Content-Type: application/json" -d '{
@@ -166,13 +173,13 @@ curl -s -X POST localhost:8000/chat -H "Content-Type: application/json" -d '{
 }' | python -m json.tool
 ```
 
-Errors: `422` invalid input · `502` LLM provider failed · `503` vector store unavailable · `409` ingestion already running.
+Errors: `404` unknown conversation · `422` invalid input · `502` LLM provider failed · `503` vector store unavailable · `409` ingestion already running.
 
 ## Testing and evaluation
 
 ```bash
-uv run pytest -q                                   # 43 tests: API + graph, all external services faked
-(cd frontend && npm test)                          # 7 UI unit tests: SSE parser, citations, history
+uv run pytest -q                                   # 50 tests: API + graph, all external services faked
+(cd frontend && npm test)                          # 10 UI unit tests: SSE parser, citations, saved chats
 uv run python eval/eval_retriever.py               # contextual precision & recall
 uv run python eval/eval_generator.py               # faithfulness, relevancy, correct behavior (through the graph)
 uv run python eval/eval_multiturn.py               # follow-ups, with vs without history
@@ -195,6 +202,10 @@ src/rag/
     state.py           shared graph state
     nodes.py           rewrite, retrieve, grade, reformulate, generate, abstain
     build.py           graph wiring (full graph + retrieval-only graph for streaming)
+  db/
+    models.py          conversations + messages tables (SQLAlchemy)
+    session.py         engine and per-request session
+    repo.py            chat-history queries
   api/
     main.py            FastAPI routes
     schemas.py         request / response models
@@ -204,7 +215,8 @@ src/rag/
 scripts/               download, ingest, try the graph, retrieval checks, latency, eval runner
 eval/                  three eval scripts + notes and comparison tables
 goldens/               retrieval, generator and multi-turn golden sets
-tests/                 API and graph tests
+tests/                 API, graph and chat-history tests
+migrations/            Alembic migrations for the chat-history tables
 frontend/              Next.js chat UI (see frontend/README.md)
   app/                 layout, page, global styles
   components/          Chat, Answer, SourceList, Composer, Sidebar, ...
@@ -218,7 +230,7 @@ frontend/              Next.js chat UI (see frontend/README.md)
 - [x] **Phase 3**: hybrid search + reranking, LangGraph (rewrite, grade, retry), multi-turn chat, three eval sets
 - [ ] **Phase 4**: Next.js chat UI, chat history (Postgres), auth, tracing (Langfuse)
   - [x] Chat UI: streaming answers, clickable citations, paper filter, browser-saved history
-  - [ ] Server-side chat history (Postgres)
+  - [x] Server-side chat history (Postgres, Alembic migrations)
   - [ ] Auth
   - [ ] Tracing (Langfuse)
 - [ ] **Phase 5**: Docker Compose, CI with eval gates, guardrails, cloud deployment

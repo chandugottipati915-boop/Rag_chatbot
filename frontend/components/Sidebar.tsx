@@ -63,6 +63,11 @@ export default function Sidebar({
         ))}
       </ul>
 
+      {health && !health.database && (
+        <p className="border-t border-rule px-4 py-2.5 text-xs leading-snug text-danger">
+          Chats aren&apos;t being saved: the database is offline. Run <code>docker start postgres</code>.
+        </p>
+      )}
       <div className="flex items-center gap-2 border-t border-rule px-4 py-3 text-xs text-muted">
         <span
           aria-hidden

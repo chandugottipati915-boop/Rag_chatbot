@@ -8,21 +8,27 @@ import json
 import logging
 import threading
 import time
+import uuid
 from collections.abc import Iterator
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 
-from fastapi import FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse, StreamingResponse
 from openai import OpenAIError
+from sqlalchemy import text
+from sqlalchemy.orm import Session
 
 from rag import vectorstore as vs
 from rag.config import settings
 from rag.api.schemas import (
-    ChatRequest, ChatResponse, HealthResponse, IngestRequest,
-    IngestStatus, Paper, SearchResponse, Source,
+    ChatRequest, ChatResponse, ConversationCreate, ConversationDetail, ConversationRename,
+    ConversationSummary, HealthResponse, IngestRequest, IngestStatus, Paper,
+    SearchResponse, Source,
 )
+from rag.db import repo
+from rag.db.session import SessionLocal, get_db
 from rag.embeddings import get_embedder
 from rag.generation import generate_stream
 from rag.graph.build import get_graph, get_retrieval_graph
@@ -45,7 +51,7 @@ async def lifespan(app: FastAPI):
     yield
 
 
-app = FastAPI(title="RAG Chatbot API", version="0.4.0", lifespan=lifespan)
+app = FastAPI(title="RAG Chatbot API", version="0.5.0", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -84,6 +90,13 @@ def graph_input(req: ChatRequest) -> dict:
     }
 
 
+def with_db_history(req: ChatRequest, db: Session) -> ChatRequest:
+    """For a stored conversation the database is the source of truth: replace the
+    request's history with the saved turns (validated, so they become Message objects)."""
+    return ChatRequest.model_validate(
+        {**req.model_dump(), "history": repo.recent_history(db, req.conversation_id)})
+
+
 def run_graph(graph, req: ChatRequest) -> dict:
     """Run a compiled graph with consistent errors.
 
@@ -116,17 +129,32 @@ def root():
     return RedirectResponse("/docs")
 
 
+def database_ok() -> bool:
+    try:
+        with SessionLocal() as s:
+            s.execute(text("SELECT 1"))
+        return True
+    except Exception:
+        log.warning("Health check: database unreachable")
+        return False
+
+
 @app.get("/health", response_model=HealthResponse, tags=["system"])
 def health() -> HealthResponse:
-    """Is Qdrant reachable, and how many chunks are indexed?"""
+    """Is Qdrant reachable, how many chunks are indexed, and can chats be saved?
+
+    `status` reflects search only: answering still works without the database.
+    """
+    database = database_ok()
     try:
         exists = vs.client.collection_exists(vs.COLL)
         points = vs.client.count(vs.COLL).count if exists else 0
     except Exception:
         log.exception("Health check: Qdrant unreachable")
-        return HealthResponse(status="degraded", qdrant=False, collection=vs.COLL, points=None)
+        return HealthResponse(status="degraded", qdrant=False, collection=vs.COLL, points=None,
+                              database=database)
     return HealthResponse(status="ok" if points > 0 else "degraded",
-                          qdrant=True, collection=vs.COLL, points=points)
+                          qdrant=True, collection=vs.COLL, points=points, database=database)
 
 
 @app.get("/papers", response_model=list[Paper], tags=["rag"])
@@ -151,25 +179,36 @@ def search(req: ChatRequest) -> SearchResponse:
 
 
 @app.post("/chat", response_model=ChatResponse, tags=["rag"])
-def chat(req: ChatRequest) -> ChatResponse:
+def chat(req: ChatRequest, db: Session = Depends(get_db)) -> ChatResponse:
     """Full cited answer in one JSON response.
 
     Runs the graph: rewrite (with history) → retrieve → grade → (reformulate once)
     → generate, or abstain when nothing relevant is found.
     """
     t0 = time.perf_counter()
+    cid = req.conversation_id
+    if cid:
+        conversation_or_404(db, cid)
+        req = with_db_history(req, db)
     state = run_graph(get_graph(), req)
-    return ChatResponse(
+    response = ChatResponse(
         question=req.question,
         answer=state["answer"],
         sources=to_sources(state.get("chunks", [])),
         latency_ms=int((time.perf_counter() - t0) * 1000),
         **graph_info(req, state),
     )
+    if cid:
+        repo.add_message(db, cid, "user", req.question)
+        repo.add_message(db, cid, "assistant", response.answer,
+                         sources=[s.model_dump() for s in to_sources(state.get("chunks", []), include_text=True)],
+                         meta={"latency_ms": response.latency_ms, "rewritten_query": response.rewritten_query,
+                               "retries": response.retries})
+    return response
 
 
 @app.post("/chat/stream", tags=["rag"])
-def chat_stream(req: ChatRequest) -> StreamingResponse:
+def chat_stream(req: ChatRequest, db: Session = Depends(get_db)) -> StreamingResponse:
     """Streamed answer as Server-Sent Events, in this order:
 
     - `sources`: graded sources (sent first so a UI can show them right away; empty if abstaining)
@@ -178,33 +217,101 @@ def chat_stream(req: ChatRequest) -> StreamingResponse:
     - `error`:   {"message": ...} if the LLM fails mid-stream
     """
     t0 = time.perf_counter()
+    cid = req.conversation_id
+    if cid:
+        if repo.get_conversation(db, cid) is None:
+            raise HTTPException(status_code=404, detail="Conversation not found")
+        req = with_db_history(req, db)
+
     # rewrite → retrieve → grade (→ reformulate) runs before streaming starts,
     # so retrieval errors still return a normal 503
     state = run_graph(get_retrieval_graph(), req)
     chunks = state.get("chunks", [])
+    sources = [s.model_dump() for s in to_sources(chunks, include_text=True)]
+    if cid:
+        repo.add_message(db, cid, "user", req.question)   # saved once retrieval has worked
+
+    def save_answer(text: str, meta: dict) -> None:
+        # A new session: the request's session (`db`) is closed once this function
+        # returns, but the stream keeps running after that.
+        if not cid or not text:
+            return
+        with SessionLocal() as s:
+            repo.add_message(s, cid, "assistant", text, sources=sources, meta=meta)
 
     def events() -> Iterator[str]:
-        # passage text included so the UI can show what each citation says
-        yield sse("sources", [s.model_dump() for s in to_sources(chunks, include_text=True)])
-        if "answer" in state:                       # the graph abstained: nothing to generate
-            yield sse("token", state["answer"])
-        else:
-            try:
-                for piece in generate_stream(answer_question(state), chunks):
-                    yield sse("token", piece)
-            except OpenAIError:
-                # the 200 status is already sent, so report the failure as an event
-                log.exception("LLM stream failed")
-                yield sse("error", {"message": "LLM provider error"})
-                return
-        yield sse("done", {"latency_ms": int((time.perf_counter() - t0) * 1000),
-                           **graph_info(req, state)})
+        answer: list[str] = []
+        saved = False
+        try:
+            # passage text included so the UI can show what each citation says
+            yield sse("sources", sources)
+            if "answer" in state:                       # the graph abstained: nothing to generate
+                answer.append(state["answer"])
+                yield sse("token", state["answer"])
+            else:
+                try:
+                    for piece in generate_stream(answer_question(state), chunks):
+                        answer.append(piece)
+                        yield sse("token", piece)
+                except OpenAIError:
+                    # the 200 status is already sent, so report the failure as an event
+                    log.exception("LLM stream failed")
+                    yield sse("error", {"message": "LLM provider error"})
+                    return
+            done = {"latency_ms": int((time.perf_counter() - t0) * 1000), **graph_info(req, state)}
+            save_answer("".join(answer), done)      # save before `done`, so a reload right after finds it
+            saved = True
+            yield sse("done", done)
+        finally:
+            # the client pressed Stop (disconnected) or the LLM failed: keep the partial answer
+            if not saved:
+                save_answer("".join(answer), {"stopped": True})
 
     return StreamingResponse(
         events(),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
+
+
+# ------------------------------------------------------------------ chat history
+
+def conversation_or_404(db: Session, conversation_id: uuid.UUID):
+    conv = repo.get_conversation(db, conversation_id)
+    if conv is None:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    return conv
+
+
+@app.get("/conversations", response_model=list[ConversationSummary], tags=["history"])
+def list_conversations(db: Session = Depends(get_db)):
+    """Saved chats, most recently active first."""
+    return repo.list_conversations(db)
+
+
+@app.post("/conversations", response_model=ConversationSummary, status_code=201, tags=["history"])
+def create_conversation(body: ConversationCreate, db: Session = Depends(get_db)):
+    """Start a new, empty chat. Send its id as `conversation_id` to /chat/stream."""
+    return repo.create_conversation(db, body.title)
+
+
+@app.get("/conversations/{conversation_id}", response_model=ConversationDetail, tags=["history"])
+def get_conversation(conversation_id: uuid.UUID, db: Session = Depends(get_db)):
+    """One chat with all its messages, oldest first."""
+    return conversation_or_404(db, conversation_id)
+
+
+@app.patch("/conversations/{conversation_id}", response_model=ConversationSummary, tags=["history"])
+def rename_conversation(conversation_id: uuid.UUID, body: ConversationRename,
+                        db: Session = Depends(get_db)):
+    return repo.rename_conversation(db, conversation_or_404(db, conversation_id), body.title)
+
+
+@app.delete("/conversations/{conversation_id}", status_code=204, tags=["history"])
+def delete_conversation(conversation_id: uuid.UUID, db: Session = Depends(get_db)):
+    """Delete a chat and its messages."""
+    repo.delete_conversation(db, conversation_or_404(db, conversation_id))
+    return Response(status_code=204)
 
 
 # ------------------------------------------------------------------ ingestion

@@ -7,9 +7,12 @@ import { AssistantMessage, UserMessage } from "./Message";
 import Sidebar from "./Sidebar";
 import SourceList from "./SourceList";
 import { CloseIcon, MenuIcon } from "./icons";
-import { ApiError, getHealth, getPapers, streamChat } from "@/lib/api";
+import {
+  ApiError, createConversation, deleteConversation, getConversation, getHealth, getPapers,
+  listConversations, streamChat,
+} from "@/lib/api";
 import { toHistory } from "@/lib/citations";
-import { loadConversations, saveConversations } from "@/lib/storage";
+import { fromSaved, fromSummary, titleFor } from "@/lib/conversations";
 import type { ChatMessage, Conversation, Health, Paper } from "@/lib/types";
 
 const newId = () =>
@@ -17,15 +20,19 @@ const newId = () =>
     ? crypto.randomUUID()
     : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
 
-function newConversation(question: string): Conversation {
+/** A chat kept only in this tab, used when the server can't save chats. */
+function localConversation(question: string): Conversation {
   const now = Date.now();
-  return {
-    id: newId(),
-    title: question.length > 60 ? `${question.slice(0, 57)}…` : question,
-    createdAt: now,
-    updatedAt: now,
-    messages: [],
-  };
+  return { id: newId(), title: titleFor(question), createdAt: now, updatedAt: now, messages: [], loaded: true, local: true };
+}
+
+/** Create the chat on the server; fall back to a local one if the database is down. */
+async function startConversation(question: string): Promise<Conversation> {
+  try {
+    return { ...fromSummary(await createConversation(titleFor(question))), loaded: true };
+  } catch {
+    return localConversation(question);
+  }
 }
 
 const NO_MESSAGES: ChatMessage[] = [];
@@ -35,8 +42,9 @@ type Focus = { messageId: string; n: number | null } | null;
 
 export default function Chat() {
   // ---- state -------------------------------------------------------------
-  // Rendered only in the browser (see ClientChat), so localStorage is safe here.
-  const [conversations, setConversations] = useState<Conversation[]>(loadConversations);
+  // Chats are saved by the API (Postgres). The list holds titles; messages load when a chat is opened.
+  const [conversations, setConversations] = useState<Conversation[]>([]);
+  const [chatError, setChatError] = useState<string | null>(null);
   const [activeId, setActiveId] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [focus, setFocus] = useState<Focus>(null);
@@ -47,6 +55,7 @@ export default function Chat() {
   const [prefill, setPrefill] = useState<{ text: string; nonce: number } | null>(null);
 
   const abortRef = useRef<AbortController | null>(null);
+  const listLoaded = useRef(false);
   const scrollRef = useRef<HTMLDivElement>(null);
   const stickToBottom = useRef(true);
 
@@ -61,19 +70,26 @@ export default function Chat() {
   const activeN = focus && focusedMessage && focus.messageId === focusedMessage.id ? focus.n : null;
 
   // ---- effects -----------------------------------------------------------
-  // Save history whenever it changes, but not on every streamed token.
-  useEffect(() => {
-    if (!busy) saveConversations(conversations);
-  }, [conversations, busy]);
-
-  // The API's health and the paper list, for the status dot and the filter.
+  // The API's health, the paper list and the saved chats. Re-checked every 30 s,
+  // so starting the backend after the page loaded still fills everything in.
   useEffect(() => {
     let cancelled = false;
     const check = () =>
       getHealth().then((h) => {
         if (cancelled) return;
         setHealth(h);
-        if (h) getPapers().then((p) => !cancelled && setPapers(p)).catch(() => {});
+        if (!h) return;
+        getPapers().then((p) => !cancelled && setPapers(p)).catch(() => {});
+        if (!listLoaded.current && h.database) {
+          listConversations()
+            .then((list) => {
+              if (cancelled) return;
+              listLoaded.current = true;
+              // keep chats started before the list arrived
+              setConversations((cs) => [...cs, ...list.filter((s) => !cs.some((c) => c.id === s.id)).map(fromSummary)]);
+            })
+            .catch(() => {});
+        }
       });
     check();
     const timer = setInterval(check, 30_000);
@@ -105,9 +121,12 @@ export default function Chat() {
   // ---- actions -----------------------------------------------------------
   async function send(question: string) {
     if (busy) return;
+    setBusy(true);
+    setChatError(null);
 
-    const conv = active ?? newConversation(question);
-    const history = toHistory(conv.messages); // earlier turns only
+    const conv = active ?? (await startConversation(question));
+    // Saved chats: the server loads history from the database. Local chats send it.
+    const history = conv.local ? toHistory(conv.messages) : [];
     const userMsg: ChatMessage = { id: newId(), role: "user", content: question };
     const reply: ChatMessage = { id: newId(), role: "assistant", content: "", status: "streaming" };
 
@@ -121,11 +140,10 @@ export default function Chat() {
 
     const controller = new AbortController();
     abortRef.current = controller;
-    setBusy(true);
 
     try {
       await streamChat(
-        { question, top_k: 5, arxiv_id: paperId, history },
+        { question, top_k: 5, arxiv_id: paperId, history, conversation_id: conv.local ? null : conv.id },
         {
           onSources: (sources) => patchMessage(conv.id, reply.id, (m) => ({ ...m, sources })),
           onToken: (t) => patchMessage(conv.id, reply.id, (m) => ({ ...m, content: m.content + t })),
@@ -153,20 +171,40 @@ export default function Chat() {
     if (busy) abortRef.current?.abort();
     setActiveId(null);
     setFocus(null);
+    setChatError(null);
     setSidebarOpen(false);
   }
 
   function deleteChat(id: string) {
+    const conv = conversations.find((c) => c.id === id);
     if (id === activeId) startNewChat();
     setConversations((cs) => cs.filter((c) => c.id !== id));
+    if (conv && !conv.local) {
+      deleteConversation(id).catch(() => {
+        // put it back: the server still has it
+        setConversations((cs) => (cs.some((c) => c.id === id) ? cs : [...cs, conv]));
+      });
+    }
   }
 
   function selectChat(id: string) {
     if (busy) abortRef.current?.abort();
     setActiveId(id);
     setFocus(null);
+    setChatError(null);
     setSidebarOpen(false);
     stickToBottom.current = true;
+
+    const conv = conversations.find((c) => c.id === id);
+    if (conv && !conv.loaded && !conv.local) {
+      getConversation(id)
+        .then((detail) =>
+          setConversations((cs) =>
+            cs.map((c) => (c.id === id ? { ...c, messages: detail.messages.map(fromSaved), loaded: true } : c)),
+          ),
+        )
+        .catch((e) => setChatError(e instanceof ApiError ? e.message : "Couldn't load this chat."));
+    }
   }
 
   // ---- layout ------------------------------------------------------------
@@ -218,7 +256,15 @@ export default function Chat() {
           }}
           className="flex-1 overflow-y-auto"
         >
-          {messages.length === 0 ? (
+          {chatError ? (
+            <p role="alert" className="mx-auto mt-16 max-w-[34rem] px-5 text-sm text-danger">
+              {chatError}
+            </p>
+          ) : active && !active.loaded ? (
+            <p role="status" className="mx-auto mt-16 max-w-[42rem] px-5 text-sm text-muted">
+              Loading the chat…
+            </p>
+          ) : messages.length === 0 ? (
             <EmptyState health={health} papers={papers} onPick={(text) => setPrefill({ text, nonce: Date.now() })} />
           ) : (
             <div className="mx-auto w-full max-w-[42rem] space-y-8 px-5 py-8">

@@ -1,14 +1,15 @@
 # Frontend: Paper Reader
 
 A Next.js chat UI for the RAG API. It streams answers from `POST /chat/stream`,
-turns `[n]` citations into clickable marks that open the cited passage, and keeps
-chat history in the browser.
+turns `[n]` citations into clickable marks that open the cited passage, and saves
+chats through the API (Postgres).
 
 ## Run it
 
 ```bash
 # 1. backend (from the project root)
-docker start qdrant
+docker start qdrant postgres
+uv run alembic upgrade head      # first time, and after pulling new migrations
 uv run uvicorn rag.api.main:app --app-dir src --reload
 
 # 2. frontend
@@ -49,17 +50,25 @@ lib/
   api.ts            fetch wrappers; streamChat() reads the SSE stream
   sse.ts            incremental Server-Sent Events parser
   citations.ts      [n] → link rewriting; history for the API
-  storage.ts        localStorage persistence (last 50 chats)
+  conversations.ts  saved-chat shapes from the API → UI shapes
   types.ts          shapes shared with src/rag/api/schemas.py
 ```
 
 ### The streaming flow
 
-1. `Chat.send()` adds the question and an empty "streaming" answer to the conversation.
-2. `streamChat()` POSTs the question, the paper filter and up to 20 earlier turns.
+1. `Chat.send()` creates the chat on the server if it's new (`POST /conversations`), then adds
+   the question and an empty "streaming" answer to it.
+2. `streamChat()` POSTs the question, the paper filter and the `conversation_id`. The server
+   loads the history from Postgres and saves both turns.
 3. The response body is read chunk by chunk; `createSSEParser()` buffers until each
    event's blank line arrives, then dispatches `sources` → `token`… → `done`.
 4. Each `token` appends to the answer; `done` adds latency, the rewritten query and retries.
 5. **Stop** aborts the fetch with an `AbortController`; the partial answer is kept.
+
+### Saved chats
+
+The sidebar lists `GET /conversations` (titles only); opening a chat loads its messages with
+`GET /conversations/{id}`. If the database is down, new chats still work but live only in the
+tab: they send their history from the browser, as before, and the sidebar says chats aren't saved.
 
 `EventSource` can't be used because it only supports GET; `/chat/stream` is a POST.

@@ -1,3 +1,4 @@
+import uuid
 from datetime import datetime
 from typing import Literal
 
@@ -22,6 +23,11 @@ class ChatRequest(BaseModel):
         default_factory=list, max_length=20,
         description="Earlier turns, oldest first. Lets follow-ups like 'How is it trained?' work.",
         examples=[[]],
+    )
+    conversation_id: uuid.UUID | None = Field(
+        default=None,
+        description="Save this turn to a stored conversation. Its history is loaded "
+                    "from the database and `history` is ignored.",
     )
 
 
@@ -72,6 +78,7 @@ class HealthResponse(BaseModel):
     qdrant: bool
     collection: str
     points: int | None
+    database: bool = False      # Postgres reachable (chat history can be saved)
 
 
 class IngestRequest(BaseModel):
@@ -83,3 +90,37 @@ class IngestStatus(BaseModel):
     started_at: datetime | None = None
     finished_at: datetime | None = None
     error: str | None = None
+
+
+# ------------------------------------------------------------------ chat history
+
+class ConversationCreate(BaseModel):
+    title: str = Field(min_length=1, max_length=200)
+
+
+class ConversationRename(BaseModel):
+    title: str = Field(min_length=1, max_length=200)
+
+
+class ConversationSummary(BaseModel):
+    model_config = {"from_attributes": True}     # build from SQLAlchemy objects
+
+    id: uuid.UUID
+    title: str
+    created_at: datetime
+    updated_at: datetime
+
+
+class MessageOut(BaseModel):
+    model_config = {"from_attributes": True}
+
+    id: uuid.UUID
+    role: Literal["user", "assistant"]
+    content: str
+    sources: list[Source] | None = None
+    meta: dict | None = None
+    created_at: datetime
+
+
+class ConversationDetail(ConversationSummary):
+    messages: list[MessageOut]

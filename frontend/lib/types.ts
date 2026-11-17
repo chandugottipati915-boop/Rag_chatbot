@@ -21,6 +21,8 @@ export type ChatRequest = {
   top_k?: number;
   arxiv_id?: string | null;
   history: HistoryMessage[];
+  /** saved conversation: the server loads history itself and stores both turns */
+  conversation_id?: string | null;
 };
 
 /** The `done` event: what the graph did on the way to the answer. */
@@ -48,7 +50,31 @@ export type Conversation = {
   createdAt: number;
   updatedAt: number;
   messages: ChatMessage[];
+  /** messages fetched from the server (the list endpoint only returns titles) */
+  loaded: boolean;
+  /** not saved on the server (the database was unavailable): history is sent from the browser */
+  local?: boolean;
 };
+
+/** GET /conversations */
+export type ConversationSummary = {
+  id: string;
+  title: string;
+  created_at: string;
+  updated_at: string;
+};
+
+/** A saved message, as GET /conversations/{id} returns it. */
+export type SavedMessage = {
+  id: string;
+  role: "user" | "assistant";
+  content: string;
+  sources: Source[] | null;
+  meta: (Partial<AnswerMeta> & { stopped?: boolean }) | null;
+  created_at: string;
+};
+
+export type ConversationDetail = ConversationSummary & { messages: SavedMessage[] };
 
 export type Paper = {
   arxiv_id: string;
@@ -62,4 +88,5 @@ export type Health = {
   qdrant: boolean;
   collection: string;
   points: number | null;
+  database: boolean;
 };

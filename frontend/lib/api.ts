@@ -1,6 +1,8 @@
 // Client for the FastAPI backend.
 import { createSSEParser } from "./sse";
-import type { AnswerMeta, ChatRequest, Health, Paper, Source } from "./types";
+import type {
+  AnswerMeta, ChatRequest, ConversationDetail, ConversationSummary, Health, Paper, Source,
+} from "./types";
 
 // NEXT_PUBLIC_ variables are inlined into the browser bundle at build time.
 export const API_URL = (process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000").replace(/\/$/, "");
@@ -23,6 +25,8 @@ async function describeFailure(res: Response): Promise<string> {
     /* body wasn't JSON */
   }
   switch (res.status) {
+    case 404:
+      return "This chat no longer exists on the server. Start a new chat.";
     case 422:
       return "The question was rejected: it must be 1–2,000 characters.";
     case 502:
@@ -89,3 +93,29 @@ export async function getHealth(): Promise<Health | null> {
     return null;
   }
 }
+
+// ---------------------------------------------------------------- saved conversations
+
+async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  let res: Response;
+  try {
+    res = await fetch(`${API_URL}${path}`, {
+      ...init,
+      headers: { "Content-Type": "application/json", ...init?.headers },
+    });
+  } catch {
+    throw networkError();
+  }
+  if (!res.ok) throw new ApiError(await describeFailure(res));
+  return (res.status === 204 ? undefined : await res.json()) as T;
+}
+
+export const listConversations = () => request<ConversationSummary[]>("/conversations");
+
+export const getConversation = (id: string) => request<ConversationDetail>(`/conversations/${id}`);
+
+export const createConversation = (title: string) =>
+  request<ConversationSummary>("/conversations", { method: "POST", body: JSON.stringify({ title }) });
+
+export const deleteConversation = (id: string) =>
+  request<void>(`/conversations/${id}`, { method: "DELETE" });

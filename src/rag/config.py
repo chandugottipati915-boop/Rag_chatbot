@@ -42,6 +42,8 @@ class Settings(BaseSettings):
     # a wrong guess hid the answer (m08, m12) and hybrid + rerank found the right paper anyway.
     rewrite_paper_filter: bool = False
 
+    database_url: str = "postgresql+psycopg://rag:rag@localhost:5432/rag"
+
     @property
     def collection_name(self) -> str:
         # separate collection per provider (vector sizes differ) and per mode
