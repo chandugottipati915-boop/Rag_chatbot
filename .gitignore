@@ -12,8 +12,12 @@ wheels/
 # Secrets: never commit
 .env
 
-# Data (re-create with scripts/download_papers.py)
-data/
+# Data (re-create with scripts/download_papers.py). catalog.json (paper titles) is kept:
+# the deployed API needs it for /papers and the router.
+data/*
+!data/raw/
+data/raw/*
+!data/raw/catalog.json
 
 # Tool caches / IDE / OS
 .deepeval/

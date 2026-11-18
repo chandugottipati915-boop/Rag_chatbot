@@ -221,6 +221,45 @@ LangGraph traces the nodes by itself; `wrap_openai` traces every LLM call; `rag/
 groups a turn under one parent run. Turns share `conversation_id`, so a chat shows up as a
 thread. Tests force tracing off (`tests/conftest.py`).
 
+## Deploy (free)
+
+One Docker image serves both the UI (Next.js exported as static files) and the API, so
+production is **one service on one URL**: no CORS setup, and the session cookie is first-party.
+
+| Piece | Where | Cost |
+|---|---|---|
+| UI + API | [Render](https://render.com) free web service (512 MB, sleeps after 15 idle minutes) | $0 |
+| Postgres | [Neon](https://neon.com) free plan | $0 |
+| Vectors | [Qdrant Cloud](https://cloud.qdrant.io) free cluster (1 GB) | $0 |
+| LLM | OpenAI, per question | a fraction of a cent; set a hard limit |
+
+The free server has 512 MB, so production runs **without the cross-encoder reranker**
+(`RERANK=false`, set in the Dockerfile) and the image has no PyTorch (`requirements-api.txt`).
+Hybrid search and the LLM grading step still filter the passages; the evals above measure what
+the reranker adds. The server uses about 200 MB.
+
+**1. Databases** (no credit card needed)
+- Neon: create a project and copy its connection string (`postgresql://...`; the app adds the driver).
+- Qdrant Cloud: create a free cluster, then copy its URL and an API key.
+
+**2. Load the papers into Qdrant Cloud, from your laptop** (once):
+```bash
+QDRANT_URL=https://<cluster>.cloud.qdrant.io QDRANT_API_KEY=<key> \
+EMBEDDING_PROVIDER=openai RETRIEVAL_MODE=hybrid uv run python scripts/ingest.py
+```
+
+**3. Deploy:** on Render, choose **New → Blueprint**, pick this repo, and fill in
+`OPENAI_API_KEY`, `DATABASE_URL`, `QDRANT_URL` and `QDRANT_API_KEY` (`render.yaml` generates
+`JWT_SECRET`). Render builds the `Dockerfile`; on every start the container runs
+`alembic upgrade head`, then the server. Check `https://<your-app>.onrender.com/health`.
+
+**4. Protect your OpenAI credit:** set a monthly hard limit in the OpenAI dashboard (e.g. $5).
+
+Optional: add `LANGSMITH_TRACING=true` and `LANGSMITH_API_KEY` in Render's settings for traces.
+
+Run the production image locally: `docker build -t paper-reader . && docker run -p 8000:8000
+--env-file .env -e COOKIE_SECURE=false paper-reader`, then open http://localhost:8000.
+
 ## Testing and evaluation
 
 ```bash
@@ -282,6 +321,8 @@ frontend/              Next.js chat UI (see frontend/README.md)
   - [x] Server-side chat history (Postgres, Alembic migrations)
   - [x] Auth (email + password, JWT cookie, per-user chats)
   - [x] Tracing (LangSmith)
-- [ ] **Phase 5**: Docker Compose, CI with eval gates, guardrails, cloud deployment
+- [ ] **Phase 5**: deployment and CI
+  - [x] One Docker image (UI + API), free deployment on Render + Neon + Qdrant Cloud
+  - [ ] CI with eval gates
 
 > Answers come from the papers in `data/raw` only and may be incomplete. Not a substitute for reading the papers.

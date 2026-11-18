@@ -2,6 +2,9 @@
 
 Run:  uv run uvicorn rag.api.main:app --app-dir src --reload
 Docs: http://localhost:8000/docs
+
+In production (Dockerfile) the same app also serves the exported Next.js UI from
+`settings.ui_dir`, so the UI and the API share one origin: no CORS, first-party cookies.
 """
 
 import json
@@ -16,6 +19,7 @@ from datetime import datetime, timezone
 from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse, StreamingResponse
+from fastapi.staticfiles import StaticFiles
 import langsmith as ls
 from openai import OpenAIError
 from sqlalchemy import text
@@ -142,11 +146,6 @@ def stream_answer(question: str, chunks: list[RetrievedChunk]) -> Iterator[str]:
 # ------------------------------------------------------------------ routes
 # Routes are plain `def`: retrieval and OpenAI calls block, so FastAPI runs
 # them in a thread pool and one slow request doesn't freeze the server.
-
-@app.get("/", include_in_schema=False)
-def root():
-    return RedirectResponse("/docs")
-
 
 def database_ok() -> bool:
     try:
@@ -442,3 +441,15 @@ def start_ingest(req: IngestRequest, user: User = Depends(current_user)) -> Inge
 def ingest_status(user: User = Depends(current_user)) -> IngestStatus:
     """Current ingestion state: idle, running, done or failed."""
     return _ingest
+
+
+# ------------------------------------------------------------------ the UI
+# Registered last: the API routes above take precedence, everything else is a UI file.
+
+if settings.ui_dir.is_dir():
+    # production: "/" is the chat app (index.html), "/_next/..." its JS and CSS
+    app.mount("/", StaticFiles(directory=settings.ui_dir, html=True), name="ui")
+else:
+    @app.get("/", include_in_schema=False)
+    def root():
+        return RedirectResponse("/docs")       # development: the UI runs on `npm run dev`

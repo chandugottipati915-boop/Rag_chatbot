@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { API_URL, ApiError, QUESTION_REJECTED, signIn, signUp } from "@/lib/api";
+import { API_LABEL, ApiError, QUESTION_REJECTED, signIn, signUp } from "@/lib/api";
 import type { User } from "@/lib/types";
 
 type Mode = "signin" | "signup";
@@ -60,7 +60,7 @@ export default function AuthScreen({
 
           {offline && (
             <p role="alert" className="mt-4 rounded-md bg-danger/8 px-3 py-2 text-sm text-danger">
-              Can&apos;t reach the API at {API_URL}. Start it, then reload this page.
+              Can&apos;t reach the API at {API_LABEL}. If it was idle it may be waking up: reload in a minute.
             </p>
           )}
 

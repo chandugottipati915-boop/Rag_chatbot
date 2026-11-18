@@ -1,6 +1,6 @@
 "use client";
 
-import { API_URL } from "@/lib/api";
+import { API_LABEL, API_URL } from "@/lib/api";
 import type { Health, Paper } from "@/lib/types";
 
 const EXAMPLES = [
@@ -31,11 +31,17 @@ export default function EmptyState({
 
       {health === null && (
         <div role="alert" className="mt-8 rounded-md border border-danger/30 bg-sheet px-4 py-3.5 text-sm">
-          <p className="font-medium text-danger">Can&apos;t reach the API at {API_URL}.</p>
-          <p className="mt-1.5 text-muted">Start Qdrant and the backend from the project folder:</p>
-          <pre className="mt-2 overflow-x-auto rounded bg-paper px-3 py-2 text-xs leading-relaxed text-ink">
-            {`docker start qdrant\nuv run uvicorn rag.api.main:app --app-dir src --reload`}
-          </pre>
+          <p className="font-medium text-danger">Can&apos;t reach the API at {API_LABEL}.</p>
+          {API_URL ? (
+            <>
+              <p className="mt-1.5 text-muted">Start Qdrant and the backend from the project folder:</p>
+              <pre className="mt-2 overflow-x-auto rounded bg-paper px-3 py-2 text-xs leading-relaxed text-ink">
+                {`docker start qdrant\nuv run uvicorn rag.api.main:app --app-dir src --reload`}
+              </pre>
+            </>
+          ) : (
+            <p className="mt-1.5 text-muted">If nobody used it for a while, it is waking up. Reload in a minute.</p>
+          )}
         </div>
       )}
 

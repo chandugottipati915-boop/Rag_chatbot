@@ -8,7 +8,8 @@ from qdrant_client.models import (
 
 from rag.config import settings
 
-client = QdrantClient(url=settings.qdrant_url, timeout=5)  # fail fast when Qdrant is down
+# fail fast when Qdrant is down; the API key is only set for Qdrant Cloud
+client = QdrantClient(url=settings.qdrant_url, api_key=settings.qdrant_api_key, timeout=10)
 COLL = settings.collection_name
 HYBRID = settings.retrieval_mode == "hybrid"
 

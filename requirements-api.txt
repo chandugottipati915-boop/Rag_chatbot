@@ -1,0 +1,18 @@
+# What the API needs at runtime, and nothing else: no PyTorch, unstructured or DeepEval,
+# so the production image stays small enough for a free 512 MB server.
+# Production runs with RERANK=false and EMBEDDING_PROVIDER=openai, which never import them.
+# Versions match uv.lock; update them together.
+alembic==1.20.1
+fastapi==0.162.4
+httpx==0.28.1
+langgraph==1.2.21
+langsmith==0.14.17
+openai==3.49.0
+psycopg[binary]==3.3.9
+pwdlib[argon2]==0.4.2
+pydantic-settings==2.16.2
+pyjwt==2.15.1
+python-dotenv==1.2.4
+qdrant-client==1.20.0
+sqlalchemy==2.1.9
+uvicorn[standard]==0.54.0

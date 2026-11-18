@@ -2,6 +2,7 @@ from pathlib import Path
 from typing import Literal
 
 from dotenv import load_dotenv
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # project root = the folder containing pyproject.toml (src/rag/config.py -> ../../)
@@ -29,6 +30,7 @@ class Settings(BaseSettings):
 
     # qdrant
     qdrant_url: str = "http://localhost:6333"
+    qdrant_api_key: str | None = None      # needed for Qdrant Cloud, not for local Docker
 
     # retrieval
     top_k: int = 5
@@ -55,6 +57,20 @@ class Settings(BaseSettings):
     jwt_expire_days: int = 7
     cookie_secure: bool = False     # true when served over HTTPS (production)
     cors_origins: list[str] = ["http://localhost:3000"]   # the UI's origin(s); cookies need an exact match
+
+    # the exported Next.js UI (frontend/out). When the folder exists the API serves it,
+    # so production is one service on one URL (see Dockerfile)
+    ui_dir: Path = PROJECT_ROOT / "frontend" / "out"
+
+    @field_validator("database_url")
+    @classmethod
+    def _use_psycopg_driver(cls, url: str) -> str:
+        # hosts like Neon hand out "postgresql://..." or "postgres://..."; SQLAlchemy
+        # needs the driver named: "postgresql+psycopg://..."
+        for prefix in ("postgres://", "postgresql://"):
+            if url.startswith(prefix):
+                return "postgresql+psycopg://" + url[len(prefix):]
+        return url
 
     @property
     def collection_name(self) -> str:

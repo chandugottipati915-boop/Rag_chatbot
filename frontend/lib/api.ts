@@ -4,8 +4,14 @@ import type {
   AnswerMeta, ChatRequest, ConversationDetail, ConversationSummary, Health, Paper, Source, User,
 } from "./types";
 
-// NEXT_PUBLIC_ variables are inlined into the browser bundle at build time.
-export const API_URL = (process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000").replace(/\/$/, "");
+// Where the API is. In production the API serves this app itself, so requests go to the
+// same origin (""). In development the API runs separately on port 8000.
+// NEXT_PUBLIC_API_URL overrides both; NEXT_PUBLIC_ variables are inlined at build time.
+const DEFAULT_API_URL = process.env.NODE_ENV === "production" ? "" : "http://localhost:8000";
+export const API_URL = (process.env.NEXT_PUBLIC_API_URL || DEFAULT_API_URL).replace(/\/$/, "");
+
+/** How to name the API in messages: "" (same origin) reads badly. */
+export const API_LABEL = API_URL || "this server";
 
 export class ApiError extends Error {}
 
@@ -55,7 +61,9 @@ async function describeFailure(res: Response): Promise<string> {
 
 function networkError(): ApiError {
   return new ApiError(
-    `Can't reach the API at ${API_URL}. Start it with: uv run uvicorn rag.api.main:app --app-dir src --reload`,
+    API_URL
+      ? `Can't reach the API at ${API_URL}. Start it with: uv run uvicorn rag.api.main:app --app-dir src --reload`
+      : "Can't reach the server. It may be waking up: free hosting sleeps when idle. Try again in a minute.",
   );
 }
 

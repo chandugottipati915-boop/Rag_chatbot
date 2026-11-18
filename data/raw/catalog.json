@@ -1,0 +1,225 @@
+{
+  "2307.03172": {
+    "title": "Lost in the Middle: How Language Models Use Long Contexts",
+    "authors": [
+      "Nelson F. Liu",
+      "Kevin Lin",
+      "John Hewitt",
+      "Ashwin Paranjape",
+      "Michele Bevilacqua",
+      "Fabio Petroni",
+      "Percy Liang"
+    ],
+    "published": "2023-07-06",
+    "url": "http://arxiv.org/abs/2307.03172v3"
+  },
+  "1706.03762": {
+    "title": "Attention Is All You Need",
+    "authors": [
+      "Ashish Vaswani",
+      "Noam Shazeer",
+      "Niki Parmar",
+      "Jakob Uszkoreit",
+      "Llion Jones",
+      "Aidan N. Gomez",
+      "Lukasz Kaiser",
+      "Illia Polosukhin"
+    ],
+    "published": "2017-06-12",
+    "url": "http://arxiv.org/abs/1706.03762v7"
+  },
+  "2005.14165": {
+    "title": "Language Models are Few-Shot Learners",
+    "authors": [
+      "Tom B. Brown",
+      "Benjamin Mann",
+      "Nick Ryder",
+      "Melanie Subbiah",
+      "Jared Kaplan",
+      "Prafulla Dhariwal",
+      "Arvind Neelakantan",
+      "Pranav Shyam",
+      "Girish Sastry",
+      "Amanda Askell",
+      "Sandhini Agarwal",
+      "Ariel Herbert-Voss",
+      "Gretchen Krueger",
+      "Tom Henighan",
+      "Rewon Child",
+      "Aditya Ramesh",
+      "Daniel M. Ziegler",
+      "Jeffrey Wu",
+      "Clemens Winter",
+      "Christopher Hesse",
+      "Mark Chen",
+      "Eric Sigler",
+      "Mateusz Litwin",
+      "Scott Gray",
+      "Benjamin Chess",
+      "Jack Clark",
+      "Christopher Berner",
+      "Sam McCandlish",
+      "Alec Radford",
+      "Ilya Sutskever",
+      "Dario Amodei"
+    ],
+    "published": "2020-05-28",
+    "url": "http://arxiv.org/abs/2005.14165v4"
+  },
+  "1810.04805": {
+    "title": "BERT: Pre-training of Deep Bidirectional Transformers for Language Understanding",
+    "authors": [
+      "Jacob Devlin",
+      "Ming-Wei Chang",
+      "Kenton Lee",
+      "Kristina Toutanova"
+    ],
+    "published": "2018-10-11",
+    "url": "http://arxiv.org/abs/1810.04805v2"
+  },
+  "2210.03629": {
+    "title": "ReAct: Synergizing Reasoning and Acting in Language Models",
+    "authors": [
+      "Shunyu Yao",
+      "Jeffrey Zhao",
+      "Dian Yu",
+      "Nan Du",
+      "Izhak Shafran",
+      "Karthik Narasimhan",
+      "Yuan Cao"
+    ],
+    "published": "2022-10-06",
+    "url": "http://arxiv.org/abs/2210.03629v3"
+  },
+  "2404.16130": {
+    "title": "From Local to Global: A Graph RAG Approach to Query-Focused Summarization",
+    "authors": [
+      "Darren Edge",
+      "Ha Trinh",
+      "Newman Cheng",
+      "Joshua Bradley",
+      "Alex Chao",
+      "Apurva Mody",
+      "Steven Truitt",
+      "Dasha Metropolitansky",
+      "Robert Osazuwa Ness",
+      "Jonathan Larson"
+    ],
+    "published": "2024-04-24",
+    "url": "http://arxiv.org/abs/2404.16130v2"
+  },
+  "2004.12832": {
+    "title": "ColBERT: Efficient and Effective Passage Search via Contextualized Late Interaction over BERT",
+    "authors": [
+      "Omar Khattab",
+      "Matei Zaharia"
+    ],
+    "published": "2020-04-27",
+    "url": "http://arxiv.org/abs/2004.12832v2"
+  },
+  "2004.04906": {
+    "title": "Dense Passage Retrieval for Open-Domain Question Answering",
+    "authors": [
+      "Vladimir Karpukhin",
+      "Barlas O\u011fuz",
+      "Sewon Min",
+      "Patrick Lewis",
+      "Ledell Wu",
+      "Sergey Edunov",
+      "Danqi Chen",
+      "Wen-tau Yih"
+    ],
+    "published": "2020-04-10",
+    "url": "http://arxiv.org/abs/2004.04906v3"
+  },
+  "2212.10496": {
+    "title": "Precise Zero-Shot Dense Retrieval without Relevance Labels",
+    "authors": [
+      "Luyu Gao",
+      "Xueguang Ma",
+      "Jimmy Lin",
+      "Jamie Callan"
+    ],
+    "published": "2022-12-20",
+    "url": "http://arxiv.org/abs/2212.10496v1"
+  },
+  "2312.10997": {
+    "title": "Retrieval-Augmented Generation for Large Language Models: A Survey",
+    "authors": [
+      "Yunfan Gao",
+      "Yun Xiong",
+      "Xinyu Gao",
+      "Kangxiang Jia",
+      "Jinliu Pan",
+      "Yuxi Bi",
+      "Yi Dai",
+      "Jiawei Sun",
+      "Meng Wang",
+      "Haofen Wang"
+    ],
+    "published": "2023-12-18",
+    "url": "http://arxiv.org/abs/2312.10997v5"
+  },
+  "1908.10084": {
+    "title": "Sentence-BERT: Sentence Embeddings using Siamese BERT-Networks",
+    "authors": [
+      "Nils Reimers",
+      "Iryna Gurevych"
+    ],
+    "published": "2019-08-27",
+    "url": "http://arxiv.org/abs/1908.10084v1"
+  },
+  "2310.11511": {
+    "title": "Self-RAG: Learning to Retrieve, Generate, and Critique through Self-Reflection",
+    "authors": [
+      "Akari Asai",
+      "Zeqiu Wu",
+      "Yizhong Wang",
+      "Avirup Sil",
+      "Hannaneh Hajishirzi"
+    ],
+    "published": "2023-10-17",
+    "url": "http://arxiv.org/abs/2310.11511v1"
+  },
+  "2005.11401": {
+    "title": "Retrieval-Augmented Generation for Knowledge-Intensive NLP Tasks",
+    "authors": [
+      "Patrick Lewis",
+      "Ethan Perez",
+      "Aleksandra Piktus",
+      "Fabio Petroni",
+      "Vladimir Karpukhin",
+      "Naman Goyal",
+      "Heinrich K\u00fcttler",
+      "Mike Lewis",
+      "Wen-tau Yih",
+      "Tim Rockt\u00e4schel",
+      "Sebastian Riedel",
+      "Douwe Kiela"
+    ],
+    "published": "2020-05-22",
+    "url": "http://arxiv.org/abs/2005.11401v4"
+  },
+  "2401.15884": {
+    "title": "Corrective Retrieval Augmented Generation",
+    "authors": [
+      "Shi-Qi Yan",
+      "Jia-Chen Gu",
+      "Yun Zhu",
+      "Zhen-Hua Ling"
+    ],
+    "published": "2024-01-29",
+    "url": "http://arxiv.org/abs/2401.15884v3"
+  },
+  "2309.15217": {
+    "title": "Ragas: Automated Evaluation of Retrieval Augmented Generation",
+    "authors": [
+      "Shahul Es",
+      "Jithin James",
+      "Luis Espinosa-Anke",
+      "Steven Schockaert"
+    ],
+    "published": "2023-09-26",
+    "url": "http://arxiv.org/abs/2309.15217v2"
+  }
+}
