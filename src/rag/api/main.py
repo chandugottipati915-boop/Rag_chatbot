@@ -13,22 +13,28 @@ from collections.abc import Iterator
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 
-from fastapi import Depends, FastAPI, HTTPException, Response
+from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse, StreamingResponse
 import langsmith as ls
 from openai import OpenAIError
 from sqlalchemy import text
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from rag import vectorstore as vs
 from rag.config import settings
 from rag.api.schemas import (
-    ChatRequest, ChatResponse, ConversationCreate, ConversationDetail, ConversationRename,
+    ChatRequest, ChatResponse, ConversationCreate, Credentials, UserOut, ConversationDetail, ConversationRename,
     ConversationSummary, HealthResponse, IngestRequest, IngestStatus, Paper,
     SearchResponse, Source,
 )
+from rag.auth import (
+    authenticate, clear_session_cookie, current_user, hash_password, login_limiter,
+    set_session_cookie,
+)
 from rag.db import repo
+from rag.db.models import User
 from rag.db.session import SessionLocal, get_db
 from rag.embeddings import get_embedder
 from rag.generation import generate_stream
@@ -53,11 +59,12 @@ async def lifespan(app: FastAPI):
     yield
 
 
-app = FastAPI(title="RAG Chatbot API", version="0.5.0", lifespan=lifespan)
+app = FastAPI(title="RAG Chatbot API", version="0.6.0", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000"],   # Next.js dev server (Phase 4)
+    allow_origins=settings.cors_origins,    # the Next.js UI; must be exact when cookies are sent
+    allow_credentials=True,                 # let the browser send the session cookie
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -184,14 +191,15 @@ def papers() -> list[Paper]:
 
 
 @app.post("/search", response_model=SearchResponse, tags=["rag"])
-def search(req: ChatRequest) -> SearchResponse:
+def search(req: ChatRequest, user: User = Depends(current_user)) -> SearchResponse:
     """Retrieved chunks only, no LLM call. Useful for debugging retrieval."""
     chunks = get_chunks(req)
     return SearchResponse(question=req.question, sources=to_sources(chunks, include_text=True))
 
 
 @app.post("/chat", response_model=ChatResponse, tags=["rag"])
-def chat(req: ChatRequest, db: Session = Depends(get_db)) -> ChatResponse:
+def chat(req: ChatRequest, user: User = Depends(current_user),
+         db: Session = Depends(get_db)) -> ChatResponse:
     """Full cited answer in one JSON response.
 
     Runs the graph: rewrite (with history) → retrieve → grade → (reformulate once)
@@ -200,9 +208,9 @@ def chat(req: ChatRequest, db: Session = Depends(get_db)) -> ChatResponse:
     t0 = time.perf_counter()
     cid = req.conversation_id
     if cid:
-        conversation_or_404(db, cid)
+        conversation_or_404(db, cid, user)
         req = with_db_history(req, db)
-    turn = start_turn("chat", req)                # LangSmith parent run (None when tracing is off)
+    turn = start_turn("chat", req, user.id)               # LangSmith parent run (None when tracing is off)
     try:
         with under(turn):
             state = run_graph(get_graph(), req)
@@ -227,7 +235,8 @@ def chat(req: ChatRequest, db: Session = Depends(get_db)) -> ChatResponse:
 
 
 @app.post("/chat/stream", tags=["rag"])
-def chat_stream(req: ChatRequest, db: Session = Depends(get_db)) -> StreamingResponse:
+def chat_stream(req: ChatRequest, user: User = Depends(current_user),
+                db: Session = Depends(get_db)) -> StreamingResponse:
     """Streamed answer as Server-Sent Events, in this order:
 
     - `sources`: graded sources (sent first so a UI can show them right away; empty if abstaining)
@@ -238,13 +247,12 @@ def chat_stream(req: ChatRequest, db: Session = Depends(get_db)) -> StreamingRes
     t0 = time.perf_counter()
     cid = req.conversation_id
     if cid:
-        if repo.get_conversation(db, cid) is None:
-            raise HTTPException(status_code=404, detail="Conversation not found")
+        conversation_or_404(db, cid, user)
         req = with_db_history(req, db)
 
     # rewrite → retrieve → grade (→ reformulate) runs before streaming starts,
     # so retrieval errors still return a normal 503
-    turn = start_turn("chat_stream", req)         # LangSmith parent run (None when tracing is off)
+    turn = start_turn("chat_stream", req, user.id)        # LangSmith parent run (None when tracing is off)
     try:
         with under(turn):
             state = run_graph(get_retrieval_graph(), req)
@@ -304,43 +312,96 @@ def chat_stream(req: ChatRequest, db: Session = Depends(get_db)) -> StreamingRes
     )
 
 
+# ------------------------------------------------------------------ auth
+
+def _login_key(request: Request, email: str) -> str:
+    return f"{request.client.host if request.client else '?'}:{repo.normalize_email(email)}"
+
+
+@app.post("/auth/signup", response_model=UserOut, status_code=201, tags=["auth"])
+def signup(body: Credentials, response: Response, db: Session = Depends(get_db)):
+    """Create an account and sign in (sets the session cookie)."""
+    if repo.get_user_by_email(db, body.email):
+        raise HTTPException(status_code=409, detail="An account with this email already exists. Sign in instead.")
+    try:
+        user = repo.create_user(db, body.email, hash_password(body.password))
+    except IntegrityError:                      # two sign-ups with the same email at once
+        db.rollback()
+        raise HTTPException(status_code=409, detail="An account with this email already exists. Sign in instead.")
+    set_session_cookie(response, user.id)
+    return user
+
+
+@app.post("/auth/login", response_model=UserOut, tags=["auth"])
+def login(body: Credentials, request: Request, response: Response, db: Session = Depends(get_db)):
+    """Sign in (sets the session cookie). Same error for an unknown email and a wrong
+    password, and 429 after 5 failures in 15 minutes."""
+    key = _login_key(request, body.email)
+    login_limiter.check(key)
+    user = authenticate(db, body.email, body.password)
+    if user is None:
+        login_limiter.failed(key)
+        raise HTTPException(status_code=401, detail="Wrong email or password.")
+    login_limiter.succeeded(key)
+    set_session_cookie(response, user.id)
+    return user
+
+
+@app.post("/auth/logout", status_code=204, tags=["auth"])
+def logout():
+    """Sign out: the browser drops the session cookie."""
+    response = Response(status_code=204)
+    clear_session_cookie(response)
+    return response
+
+
+@app.get("/auth/me", response_model=UserOut, tags=["auth"])
+def me(user: User = Depends(current_user)):
+    """Who is signed in (401 if nobody). The UI calls this on load."""
+    return user
+
+
 # ------------------------------------------------------------------ chat history
 
-def conversation_or_404(db: Session, conversation_id: uuid.UUID):
-    conv = repo.get_conversation(db, conversation_id)
+def conversation_or_404(db: Session, conversation_id: uuid.UUID, user: User):
+    """The user's own chat, or 404: someone else's chat looks the same as a missing one."""
+    conv = repo.get_conversation(db, conversation_id, user.id)
     if conv is None:
         raise HTTPException(status_code=404, detail="Conversation not found")
     return conv
 
 
 @app.get("/conversations", response_model=list[ConversationSummary], tags=["history"])
-def list_conversations(db: Session = Depends(get_db)):
-    """Saved chats, most recently active first."""
-    return repo.list_conversations(db)
+def list_conversations(user: User = Depends(current_user), db: Session = Depends(get_db)):
+    """Your saved chats, most recently active first."""
+    return repo.list_conversations(db, user.id)
 
 
 @app.post("/conversations", response_model=ConversationSummary, status_code=201, tags=["history"])
-def create_conversation(body: ConversationCreate, db: Session = Depends(get_db)):
+def create_conversation(body: ConversationCreate, user: User = Depends(current_user),
+                        db: Session = Depends(get_db)):
     """Start a new, empty chat. Send its id as `conversation_id` to /chat/stream."""
-    return repo.create_conversation(db, body.title)
+    return repo.create_conversation(db, body.title, user.id)
 
 
 @app.get("/conversations/{conversation_id}", response_model=ConversationDetail, tags=["history"])
-def get_conversation(conversation_id: uuid.UUID, db: Session = Depends(get_db)):
-    """One chat with all its messages, oldest first."""
-    return conversation_or_404(db, conversation_id)
+def get_conversation(conversation_id: uuid.UUID, user: User = Depends(current_user),
+                     db: Session = Depends(get_db)):
+    """One of your chats with all its messages, oldest first."""
+    return conversation_or_404(db, conversation_id, user)
 
 
 @app.patch("/conversations/{conversation_id}", response_model=ConversationSummary, tags=["history"])
 def rename_conversation(conversation_id: uuid.UUID, body: ConversationRename,
-                        db: Session = Depends(get_db)):
-    return repo.rename_conversation(db, conversation_or_404(db, conversation_id), body.title)
+                        user: User = Depends(current_user), db: Session = Depends(get_db)):
+    return repo.rename_conversation(db, conversation_or_404(db, conversation_id, user), body.title)
 
 
 @app.delete("/conversations/{conversation_id}", status_code=204, tags=["history"])
-def delete_conversation(conversation_id: uuid.UUID, db: Session = Depends(get_db)):
-    """Delete a chat and its messages."""
-    repo.delete_conversation(db, conversation_or_404(db, conversation_id))
+def delete_conversation(conversation_id: uuid.UUID, user: User = Depends(current_user),
+                        db: Session = Depends(get_db)):
+    """Delete one of your chats and its messages."""
+    repo.delete_conversation(db, conversation_or_404(db, conversation_id, user))
     return Response(status_code=204)
 
 
@@ -366,7 +427,7 @@ def _run_ingest(force: bool) -> None:
 
 
 @app.post("/ingest", response_model=IngestStatus, status_code=202, tags=["admin"])
-def start_ingest(req: IngestRequest) -> IngestStatus:
+def start_ingest(req: IngestRequest, user: User = Depends(current_user)) -> IngestStatus:
     """Start ingesting data/raw in the background. Poll GET /ingest for progress."""
     global _ingest
     with _ingest_lock:
@@ -378,6 +439,6 @@ def start_ingest(req: IngestRequest) -> IngestStatus:
 
 
 @app.get("/ingest", response_model=IngestStatus, tags=["admin"])
-def ingest_status() -> IngestStatus:
+def ingest_status(user: User = Depends(current_user)) -> IngestStatus:
     """Current ingestion state: idle, running, done or failed."""
     return _ingest

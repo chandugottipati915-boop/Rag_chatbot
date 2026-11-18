@@ -22,7 +22,7 @@ from langsmith.utils import tracing_is_enabled
 from rag.config import settings
 
 
-def turn_metadata(req) -> dict:
+def turn_metadata(req, user_id=None) -> dict:
     meta = {
         "top_k": req.top_k,
         "arxiv_id": req.arxiv_id,
@@ -32,10 +32,12 @@ def turn_metadata(req) -> dict:
     }
     if req.conversation_id:
         meta["conversation_id"] = str(req.conversation_id)   # groups the chat as a thread
+    if user_id:
+        meta["user_id"] = str(user_id)                       # whose turn (not their email)
     return meta
 
 
-def start_turn(name: str, req) -> RunTree | None:
+def start_turn(name: str, req, user_id=None) -> RunTree | None:
     """Open the parent run for one chat turn, or return None when tracing is off."""
     if not tracing_is_enabled():
         return None
@@ -43,7 +45,7 @@ def start_turn(name: str, req) -> RunTree | None:
         name=name,
         run_type="chain",
         inputs={"question": req.question, "history": [m.model_dump() for m in req.history]},
-        extra={"metadata": turn_metadata(req)},
+        extra={"metadata": turn_metadata(req, user_id)},
         tags=["api"],
     )
     run.post()

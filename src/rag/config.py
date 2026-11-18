@@ -50,6 +50,12 @@ class Settings(BaseSettings):
 
     database_url: str = "postgresql+psycopg://rag:rag@localhost:5432/rag"
 
+    # auth
+    jwt_secret: str = ""            # signs session tokens; empty = random per process (sign-ins reset on restart)
+    jwt_expire_days: int = 7
+    cookie_secure: bool = False     # true when served over HTTPS (production)
+    cors_origins: list[str] = ["http://localhost:3000"]   # the UI's origin(s); cookies need an exact match
+
     @property
     def collection_name(self) -> str:
         # separate collection per provider (vector sizes differ) and per mode

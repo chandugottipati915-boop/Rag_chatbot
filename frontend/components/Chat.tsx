@@ -8,12 +8,12 @@ import Sidebar from "./Sidebar";
 import SourceList from "./SourceList";
 import { CloseIcon, MenuIcon } from "./icons";
 import {
-  ApiError, createConversation, deleteConversation, getConversation, getHealth, getPapers,
+  ApiError, AuthError, createConversation, deleteConversation, getConversation, getHealth, getPapers,
   listConversations, streamChat,
 } from "@/lib/api";
 import { toHistory } from "@/lib/citations";
 import { fromSaved, fromSummary, titleFor } from "@/lib/conversations";
-import type { ChatMessage, Conversation, Health, Paper } from "@/lib/types";
+import type { ChatMessage, Conversation, Health, Paper, User } from "@/lib/types";
 
 const newId = () =>
   typeof crypto !== "undefined" && "randomUUID" in crypto
@@ -30,7 +30,8 @@ function localConversation(question: string): Conversation {
 async function startConversation(question: string): Promise<Conversation> {
   try {
     return { ...fromSummary(await createConversation(titleFor(question))), loaded: true };
-  } catch {
+  } catch (e) {
+    if (e instanceof AuthError) throw e;          // signed out: don't fall back, go to sign-in
     return localConversation(question);
   }
 }
@@ -40,7 +41,16 @@ const NO_MESSAGES: ChatMessage[] = [];
 /** Which answer's sources fill the margin, and which citation is open. */
 type Focus = { messageId: string; n: number | null } | null;
 
-export default function Chat() {
+export default function Chat({
+  user,
+  onSignOut,
+  onSessionLost,
+}: {
+  user: User;
+  onSignOut: () => void;
+  /** a request came back 401 (session expired): back to the sign-in screen */
+  onSessionLost: () => void;
+}) {
   // ---- state -------------------------------------------------------------
   // Chats are saved by the API (Postgres). The list holds titles; messages load when a chat is opened.
   const [conversations, setConversations] = useState<Conversation[]>([]);
@@ -88,7 +98,7 @@ export default function Chat() {
               // keep chats started before the list arrived
               setConversations((cs) => [...cs, ...list.filter((s) => !cs.some((c) => c.id === s.id)).map(fromSummary)]);
             })
-            .catch(() => {});
+            .catch((e) => e instanceof AuthError && onSessionLost());
         }
       });
     check();
@@ -97,7 +107,7 @@ export default function Chat() {
       cancelled = true;
       clearInterval(timer);
     };
-  }, []);
+  }, [onSessionLost]);
 
   // Follow the streaming answer, unless the reader has scrolled up.
   useEffect(() => {
@@ -124,7 +134,14 @@ export default function Chat() {
     setBusy(true);
     setChatError(null);
 
-    const conv = active ?? (await startConversation(question));
+    let conv: Conversation;
+    try {
+      conv = active ?? (await startConversation(question));
+    } catch {
+      setBusy(false);
+      onSessionLost();
+      return;
+    }
     // Saved chats: the server loads history from the database. Local chats send it.
     const history = conv.local ? toHistory(conv.messages) : [];
     const userMsg: ChatMessage = { id: newId(), role: "user", content: question };
@@ -154,6 +171,10 @@ export default function Chat() {
       // the stream ended without a `done` event: keep what arrived
       patchMessage(conv.id, reply.id, (m) => (m.status === "streaming" ? { ...m, status: "done" } : m));
     } catch (e) {
+      if (e instanceof AuthError) {
+        onSessionLost();
+        return;
+      }
       if (controller.signal.aborted) {
         patchMessage(conv.id, reply.id, (m) => ({ ...m, status: "stopped" }));
       } else {
@@ -180,7 +201,8 @@ export default function Chat() {
     if (id === activeId) startNewChat();
     setConversations((cs) => cs.filter((c) => c.id !== id));
     if (conv && !conv.local) {
-      deleteConversation(id).catch(() => {
+      deleteConversation(id).catch((e) => {
+        if (e instanceof AuthError) return onSessionLost();
         // put it back: the server still has it
         setConversations((cs) => (cs.some((c) => c.id === id) ? cs : [...cs, conv]));
       });
@@ -203,7 +225,11 @@ export default function Chat() {
             cs.map((c) => (c.id === id ? { ...c, messages: detail.messages.map(fromSaved), loaded: true } : c)),
           ),
         )
-        .catch((e) => setChatError(e instanceof ApiError ? e.message : "Couldn't load this chat."));
+        .catch((e) =>
+          e instanceof AuthError
+            ? onSessionLost()
+            : setChatError(e instanceof ApiError ? e.message : "Couldn't load this chat."),
+        );
     }
   }
 
@@ -223,6 +249,8 @@ export default function Chat() {
           conversations={conversations}
           activeId={activeId}
           health={health}
+          user={user}
+          onSignOut={onSignOut}
           onSelect={selectChat}
           onNew={startNewChat}
           onDelete={deleteChat}

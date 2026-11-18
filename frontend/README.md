@@ -2,7 +2,7 @@
 
 A Next.js chat UI for the RAG API. It streams answers from `POST /chat/stream`,
 turns `[n]` citations into clickable marks that open the cited passage, and saves
-chats through the API (Postgres).
+each user's chats through the API (Postgres). Users sign in with email and password.
 
 ## Run it
 
@@ -38,7 +38,9 @@ app/
   page.tsx          renders <ClientChat/> (server component)
   globals.css       design tokens (Tailwind v4 @theme) and answer typography
 components/
-  ClientChat.tsx    loads Chat in the browser only (it reads localStorage)
+  ClientChat.tsx    loads the app in the browser only (no server rendering)
+  App.tsx           auth gate: asks /auth/me, shows AuthScreen or Chat
+  AuthScreen.tsx    sign in / create account
   Chat.tsx          all chat state: conversations, streaming, focus, health
   Message.tsx       user bubble, assistant answer, refusal, metadata line
   Answer.tsx        markdown answer; [n] becomes a clickable citation mark
@@ -64,6 +66,14 @@ lib/
    event's blank line arrives, then dispatches `sources` → `token`… → `done`.
 4. Each `token` appends to the answer; `done` adds latency, the rewritten query and retries.
 5. **Stop** aborts the fetch with an `AbortController`; the partial answer is kept.
+
+### Signing in
+
+The API sets an httpOnly session cookie; the app never sees the token. Every `fetch` uses
+`credentials: "include"` so the browser sends that cookie to the API (another origin: port
+8000), and the API allows it with `allow_credentials=True` and an exact `CORS_ORIGINS`. Any 401
+(`AuthError`) sends you back to the sign-in screen. Signing out unmounts `Chat`, so one user's
+chats never stay in memory for the next.
 
 ### Saved chats
 

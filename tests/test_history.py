@@ -8,9 +8,9 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 import rag.api.main as api
-from rag.db.models import Base
+from rag.db.models import Base, User
 from rag.db.session import get_db
-from tests.test_api import HISTORY, client, llm, parse_sse, retrieved  # noqa: F401  (fixtures)
+from tests.test_api import HISTORY, TEST_USER, client, llm, parse_sse, retrieved  # noqa: F401  (fixtures)
 
 
 @pytest.fixture
@@ -24,6 +24,9 @@ def db_client(client, monkeypatch):   # noqa: F811
         with TestSession() as s:
             yield s
 
+    with TestSession() as s:                                 # the signed-in test user owns its chats
+        s.add(User(id=TEST_USER.id, email=TEST_USER.email, password_hash="x"))
+        s.commit()
     api.app.dependency_overrides[get_db] = override_get_db
     monkeypatch.setattr(api, "SessionLocal", TestSession)   # used inside the stream
     yield client

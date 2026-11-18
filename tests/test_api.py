@@ -16,7 +16,10 @@ import pytest
 from fastapi.testclient import TestClient
 from openai import OpenAIError
 
+import uuid
+
 import rag.api.main as api
+from rag.auth import current_user
 import rag.graph.nodes as nodes
 from rag.api.schemas import IngestStatus
 from rag.generation import NO_ANSWER
@@ -27,6 +30,8 @@ CHUNK = RetrievedChunk(
     arxiv_id="2005.11401", title="Retrieval-Augmented Generation", section="2.1 Models",
     page_start=3, page_end=3,
 )
+TEST_USER = SimpleNamespace(id=uuid.UUID("00000000-0000-0000-0000-0000000000aa"), email="test@example.com")
+
 HISTORY = [{"role": "user", "content": "What is RAG?"},
            {"role": "assistant", "content": "RAG combines a retriever with a generator [1]."}]
 
@@ -86,7 +91,10 @@ def client(monkeypatch, llm, retrieved):
     monkeypatch.setattr(nodes, "llm_generate", lambda q, chunks: "It uses per-token documents [1].")
     monkeypatch.setattr(api, "generate_stream", lambda q, chunks: iter(["It uses ", "per-token documents [1]."]))
     monkeypatch.setattr(api, "_ingest", IngestStatus(state="idle"))
-    return TestClient(api.app)   # no `with`: skips startup, so the embedding model isn't loaded
+    # signed in as a fake user: auth itself is tested in test_auth.py
+    api.app.dependency_overrides[current_user] = lambda: TEST_USER
+    yield TestClient(api.app)   # no `with`: skips startup, so the embedding model isn't loaded
+    api.app.dependency_overrides.clear()
 
 
 def parse_sse(body: str) -> list[tuple[str, object]]:

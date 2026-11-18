@@ -1,12 +1,14 @@
 "use client";
 
 import { CloseIcon, PlusIcon } from "./icons";
-import type { Conversation, Health } from "@/lib/types";
+import type { Conversation, Health, User } from "@/lib/types";
 
 export default function Sidebar({
   conversations,
   activeId,
   health,
+  user,
+  onSignOut,
   onSelect,
   onNew,
   onDelete,
@@ -14,6 +16,8 @@ export default function Sidebar({
   conversations: Conversation[];
   activeId: string | null;
   health: Health | null | undefined;
+  user: User;
+  onSignOut: () => void;
   onSelect: (id: string) => void;
   onNew: () => void;
   onDelete: (id: string) => void;
@@ -82,6 +86,14 @@ export default function Sidebar({
             : health.status === "ok"
               ? `${health.points?.toLocaleString()} passages indexed`
               : "Index is empty or Qdrant is down"}
+      </div>
+      <div className="flex items-center justify-between gap-2 border-t border-rule px-4 py-3">
+        <span className="min-w-0 truncate text-xs text-ink" title={user.email}>
+          {user.email}
+        </span>
+        <button type="button" onClick={onSignOut} className="shrink-0 text-xs font-medium text-teal hover:underline">
+          Sign out
+        </button>
       </div>
     </nav>
   );

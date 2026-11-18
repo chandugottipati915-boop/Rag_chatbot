@@ -4,9 +4,10 @@ Ask questions about 15 landmark papers (Transformers, BERT, DPR, ColBERT, RAG, S
 CRAG, GraphRAG, RAGAS, …) and get answers with citations to the paper, section and page.
 Follow-up questions work: the conversation is taken into account.
 
-**Status:** Phase 4 in progress. Hybrid retrieval with reranking, orchestrated as a LangGraph
+**Status:** Phase 4 complete. Hybrid retrieval with reranking, orchestrated as a LangGraph
 pipeline (query rewriting, relevance grading, one retry), served by a streaming FastAPI backend,
-measured with three evaluation sets, and used through a Next.js chat UI.
+measured with four evaluation sets, and used through a Next.js chat UI with accounts,
+saved chats and LangSmith tracing.
 
 ![The chat UI: an answer with numbered citations, and the cited passage highlighted in the margin](docs/ui.png)
 
@@ -113,7 +114,7 @@ Details and per-question notes: [`eval/phase3_comparison.md`](eval/phase3_compar
 
 Python 3.12 · uv · unstructured · OpenAI (`text-embedding-3-small`, `gpt-4o-mini`) · Qdrant
 (dense + BM25, RRF) · sentence-transformers cross-encoder (`BAAI/bge-reranker-base`) ·
-LangGraph · FastAPI · Postgres (SQLAlchemy 2, Alembic) · LangSmith · DeepEval · pytest · Next.js 16 (React 19, TypeScript, Tailwind v4) · Vitest
+LangGraph · FastAPI · Postgres (SQLAlchemy 2, Alembic) · argon2 + JWT auth · LangSmith · DeepEval · pytest · Next.js 16 (React 19, TypeScript, Tailwind v4) · Vitest
 
 ## Setup
 
@@ -124,7 +125,8 @@ cp .env.example .env                      # add OPENAI_API_KEY; set RETRIEVAL_MO
 docker run -d -p 6333:6333 -v qdrant_data:/qdrant/storage --name qdrant qdrant/qdrant   # Qdrant >= 1.15.3
 docker run -d -p 5432:5432 -e POSTGRES_USER=rag -e POSTGRES_PASSWORD=rag -e POSTGRES_DB=rag \
   -v pg_data:/var/lib/postgresql/data --name postgres postgres:17                       # chat history
-uv run alembic upgrade head               # create the chat-history tables
+uv run alembic upgrade head               # create the users and chat-history tables
+# set JWT_SECRET in .env (see .env.example), or everyone is signed out on each restart
 
 uv run python scripts/download_papers.py  # 15 PDFs from arXiv → data/raw/
 uv run python scripts/ingest.py           # chunk, embed, load into Qdrant (--force to rebuild)
@@ -146,8 +148,8 @@ cd frontend && npm install && npm run dev          # http://localhost:3000 (the 
 ```
 
 A Next.js app that streams answers from `/chat/stream`. Each `[n]` citation is a clickable
-mark that opens the cited passage in a side margin, and chats are saved in Postgres through
-the API, so they survive reloads and other browsers. Details in [frontend/README.md](frontend/README.md).
+mark that opens the cited passage in a side margin. You sign in with an email and password,
+and your chats are saved to your account in Postgres. Details in [frontend/README.md](frontend/README.md).
 
 ## API
 
@@ -163,8 +165,12 @@ uv run uvicorn rag.api.main:app --app-dir src --reload     # interactive docs: h
 | POST | `/chat` | Full cited answer as JSON (runs the graph) |
 | POST | `/chat/stream` | Streamed answer via Server-Sent Events: `sources` → `token`… → `done` |
 | POST / GET | `/ingest` | Start background ingestion / check its status |
-| GET / POST | `/conversations` | List saved chats (newest first) / start one |
-| GET / PATCH / DELETE | `/conversations/{id}` | A chat with its messages / rename / delete |
+| POST | `/auth/signup`, `/auth/login` | Create an account / sign in: sets an httpOnly session cookie |
+| POST / GET | `/auth/logout`, `/auth/me` | Sign out / who is signed in |
+| GET / POST | `/conversations` | List your saved chats (newest first) / start one |
+| GET / PATCH / DELETE | `/conversations/{id}` | One of your chats with its messages / rename / delete |
+
+`/health` and `/papers` are public; everything else needs a signed-in user (401 otherwise).
 
 For a saved chat, send `conversation_id`: the server loads the history from Postgres and stores
 both turns (a stopped answer is kept, marked `stopped`). Without it, send earlier turns in `history`
@@ -178,7 +184,23 @@ curl -s -X POST localhost:8000/chat -H "Content-Type: application/json" -d '{
 }' | python -m json.tool
 ```
 
-Errors: `404` unknown conversation · `422` invalid input · `502` LLM provider failed · `503` vector store unavailable · `409` ingestion already running.
+Errors: `401` not signed in · `404` unknown conversation (or someone else's) · `429` too many failed sign-ins · `422` invalid input · `502` LLM provider failed · `503` vector store unavailable · `409` ingestion already running.
+
+## Auth
+
+Email and password, built into the API:
+
+- **Passwords** are stored as argon2 hashes (`pwdlib`), never as text. Signing in with an unknown
+  email does the same hashing work as a wrong password, so response times don't reveal accounts.
+- **Sessions** are JWTs signed with `JWT_SECRET`, in an httpOnly, SameSite=Lax cookie: page scripts
+  can't read it and other sites can't use it. Scripts can send `Authorization: Bearer <token>`.
+- **Authorization:** every chat query filters by the owner. Someone else's chat returns 404, exactly
+  like a missing one, so ids can't be probed.
+- **Brute force:** 5 failed sign-ins per email and IP in 15 minutes → 429 (in memory, per process).
+
+`rag/auth.py` has the hashing, tokens, the `current_user` dependency and the limiter; routes are
+protected with `user: User = Depends(current_user)`. Chats saved before auth existed have no owner
+and can't be opened (delete them with `DELETE FROM conversations WHERE user_id IS NULL;`).
 
 ## Tracing (LangSmith)
 
@@ -186,7 +208,7 @@ Set `LANGSMITH_TRACING=true`, `LANGSMITH_API_KEY` and `LANGSMITH_PROJECT` in `.e
 turn then becomes one trace:
 
 ```
-chat_stream                      metadata: conversation_id, top_k, retrieval_mode, rerank, llm_model
+chat_stream                      metadata: conversation_id, user_id, top_k, retrieval_mode, rerank, llm_model
 ├── LangGraph
 │   ├── rewrite ── ChatOpenAI    (routes; also rewrites follow-ups)
 │   ├── retrieve
@@ -202,7 +224,7 @@ thread. Tests force tracing off (`tests/conftest.py`).
 ## Testing and evaluation
 
 ```bash
-uv run pytest -q                                   # 62 tests: API + graph, all external services faked
+uv run pytest -q                                   # 82 tests: API + graph, all external services faked
 (cd frontend && npm test)                          # 10 UI unit tests: SSE parser, citations, saved chats
 uv run python eval/eval_retriever.py               # contextual precision & recall
 uv run python eval/eval_generator.py               # faithfulness, relevancy, correct behavior (through the graph)
@@ -228,9 +250,10 @@ src/rag/
     nodes.py           rewrite, retrieve, grade, reformulate, generate, abstain
     build.py           graph wiring (full graph + retrieval-only graph for streaming)
   db/
-    models.py          conversations + messages tables (SQLAlchemy)
+    models.py          users, conversations, messages tables (SQLAlchemy)
     session.py         engine and per-request session
     repo.py            chat-history queries
+  auth.py              passwords, session tokens, current_user, login limiter
   tracing.py           LangSmith: one trace per chat turn
   api/
     main.py            FastAPI routes
@@ -241,8 +264,8 @@ src/rag/
 scripts/               download, ingest, try the graph, retrieval checks, latency, eval runner
 eval/                  four eval scripts (retrieval, generator, multi-turn, router) + notes
 goldens/               retrieval, generator, multi-turn and router golden sets
-tests/                 API, graph and chat-history tests
-migrations/            Alembic migrations for the chat-history tables
+tests/                 API, graph, chat-history, auth and tracing tests
+migrations/            Alembic migrations: chat history, then users and chat owners
 frontend/              Next.js chat UI (see frontend/README.md)
   app/                 layout, page, global styles
   components/          Chat, Answer, SourceList, Composer, Sidebar, ...
@@ -254,10 +277,10 @@ frontend/              Next.js chat UI (see frontend/README.md)
 - [x] **Phase 1**: ingestion, retrieval, cited generation, evaluated baseline
 - [x] **Phase 2**: FastAPI backend with streaming answers
 - [x] **Phase 3**: hybrid search + reranking, LangGraph (rewrite, grade, retry), multi-turn chat, three eval sets
-- [ ] **Phase 4**: Next.js chat UI, chat history (Postgres), auth, tracing (LangSmith)
+- [x] **Phase 4**: Next.js chat UI, chat history (Postgres), auth, tracing (LangSmith)
   - [x] Chat UI: streaming answers, clickable citations, paper filter, browser-saved history
   - [x] Server-side chat history (Postgres, Alembic migrations)
-  - [ ] Auth
+  - [x] Auth (email + password, JWT cookie, per-user chats)
   - [x] Tracing (LangSmith)
 - [ ] **Phase 5**: Docker Compose, CI with eval gates, guardrails, cloud deployment
 

@@ -2,7 +2,7 @@ import uuid
 from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from rag.retrieval import RetrievedChunk
 
@@ -90,6 +90,28 @@ class IngestStatus(BaseModel):
     started_at: datetime | None = None
     finished_at: datetime | None = None
     error: str | None = None
+
+
+# ------------------------------------------------------------------ auth
+
+class Credentials(BaseModel):
+    email: str = Field(min_length=3, max_length=254, pattern=r"^[^@\s]+@[^@\s]+\.[^@\s]+$",
+                       examples=["you@example.com"])
+    password: str = Field(min_length=8, max_length=128, examples=["a-long-passphrase"])
+
+    @field_validator("email", mode="before")
+    @classmethod
+    def _normalize_email(cls, v):
+        # pasted emails often carry spaces; case doesn't matter in practice
+        return v.strip().lower() if isinstance(v, str) else v
+
+
+class UserOut(BaseModel):
+    model_config = {"from_attributes": True}
+
+    id: uuid.UUID
+    email: str
+    created_at: datetime
 
 
 # ------------------------------------------------------------------ chat history

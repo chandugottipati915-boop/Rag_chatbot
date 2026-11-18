@@ -76,6 +76,12 @@ export type SavedMessage = {
 
 export type ConversationDetail = ConversationSummary & { messages: SavedMessage[] };
 
+export type User = {
+  id: string;
+  email: string;
+  created_at: string;
+};
+
 export type Paper = {
   arxiv_id: string;
   title: string;

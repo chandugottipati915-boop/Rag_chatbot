@@ -1,13 +1,22 @@
 // Client for the FastAPI backend.
 import { createSSEParser } from "./sse";
 import type {
-  AnswerMeta, ChatRequest, ConversationDetail, ConversationSummary, Health, Paper, Source,
+  AnswerMeta, ChatRequest, ConversationDetail, ConversationSummary, Health, Paper, Source, User,
 } from "./types";
 
 // NEXT_PUBLIC_ variables are inlined into the browser bundle at build time.
 export const API_URL = (process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000").replace(/\/$/, "");
 
 export class ApiError extends Error {}
+
+export const QUESTION_REJECTED = "The question was rejected: it must be 1–2,000 characters.";
+
+/** 401: not signed in, or the session expired. The UI goes back to the sign-in screen. */
+export class AuthError extends ApiError {}
+
+// The session is an httpOnly cookie set by the API. "include" makes the browser send it
+// to the API (a different origin: port 8000) and accept the cookies the API sets.
+const CREDENTIALS: RequestCredentials = "include";
 
 export type StreamHandlers = {
   onSources: (sources: Source[]) => void;
@@ -25,10 +34,16 @@ async function describeFailure(res: Response): Promise<string> {
     /* body wasn't JSON */
   }
   switch (res.status) {
+    case 401:
+      return detail || "Sign in to continue.";
+    case 409:
+      return detail || "That already exists.";
+    case 429:
+      return detail || "Too many attempts. Try again in a few minutes.";
     case 404:
       return "This chat no longer exists on the server. Start a new chat.";
     case 422:
-      return "The question was rejected: it must be 1–2,000 characters.";
+      return QUESTION_REJECTED;
     case 502:
       return "The language model call failed. Check OPENAI_API_KEY in the backend's .env.";
     case 503:
@@ -53,6 +68,7 @@ export async function streamChat(req: ChatRequest, handlers: StreamHandlers, sig
   try {
     res = await fetch(`${API_URL}/chat/stream`, {
       method: "POST",
+      credentials: CREDENTIALS,
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(req),
       signal,
@@ -61,6 +77,7 @@ export async function streamChat(req: ChatRequest, handlers: StreamHandlers, sig
     if (signal.aborted) throw e;
     throw networkError();
   }
+  if (res.status === 401) throw new AuthError(await describeFailure(res));
   if (!res.ok || !res.body) throw new ApiError(await describeFailure(res));
 
   const reader = res.body.pipeThrough(new TextDecoderStream()).getReader();
@@ -80,14 +97,14 @@ export async function streamChat(req: ChatRequest, handlers: StreamHandlers, sig
 }
 
 export async function getPapers(): Promise<Paper[]> {
-  const res = await fetch(`${API_URL}/papers`);
+  const res = await fetch(`${API_URL}/papers`, { credentials: CREDENTIALS });
   if (!res.ok) throw new ApiError(await describeFailure(res));
   return res.json();
 }
 
 export async function getHealth(): Promise<Health | null> {
   try {
-    const res = await fetch(`${API_URL}/health`);
+    const res = await fetch(`${API_URL}/health`, { credentials: CREDENTIALS });
     return res.ok ? await res.json() : null;
   } catch {
     return null;
@@ -101,11 +118,13 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   try {
     res = await fetch(`${API_URL}${path}`, {
       ...init,
+      credentials: CREDENTIALS,
       headers: { "Content-Type": "application/json", ...init?.headers },
     });
   } catch {
     throw networkError();
   }
+  if (res.status === 401) throw new AuthError(await describeFailure(res));
   if (!res.ok) throw new ApiError(await describeFailure(res));
   return (res.status === 204 ? undefined : await res.json()) as T;
 }
@@ -119,3 +138,23 @@ export const createConversation = (title: string) =>
 
 export const deleteConversation = (id: string) =>
   request<void>(`/conversations/${id}`, { method: "DELETE" });
+
+// ---------------------------------------------------------------- auth
+
+export const signUp = (email: string, password: string) =>
+  request<User>("/auth/signup", { method: "POST", body: JSON.stringify({ email, password }) });
+
+export const signIn = (email: string, password: string) =>
+  request<User>("/auth/login", { method: "POST", body: JSON.stringify({ email, password }) });
+
+export const signOut = () => request<void>("/auth/logout", { method: "POST" });
+
+/** The signed-in user, or null when nobody is (throws only if the API is unreachable). */
+export async function getMe(): Promise<User | null> {
+  try {
+    return await request<User>("/auth/me");
+  } catch (e) {
+    if (e instanceof AuthError) return null;
+    throw e;
+  }
+}
