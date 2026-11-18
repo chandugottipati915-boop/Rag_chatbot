@@ -53,7 +53,9 @@ async function describeFailure(res: Response): Promise<string> {
     case 502:
       return "The language model call failed. Check OPENAI_API_KEY in the backend's .env.";
     case 503:
-      return "Search is unavailable. Check that Qdrant is running (docker ps).";
+      return API_URL
+        ? "Search is unavailable. Check that Qdrant is running (docker ps)."
+        : "Search is unavailable right now: the vector database can't be reached or has no papers loaded.";
     default:
       return `The API returned ${res.status}${detail ? `: ${detail}` : ""}.`;
   }
